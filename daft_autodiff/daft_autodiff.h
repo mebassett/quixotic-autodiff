@@ -90,7 +90,7 @@ struct Operation {
     const OperationType opType;
     uint workingSize;
     uint resultSize;
-    const uint gradSize;
+    uint gradSize;
     const uint rows;
     const uint cols;
     const string name;

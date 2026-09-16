@@ -129,6 +129,30 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
 
         }
     }
+    __global__ void doConcatDeinterleave(float* inputSeed, int numTargets, float* result, int batchSize) {
+        int elemIdx = blockIdx.x * blockDim.x + threadIdx.x;
+        int targetIdx = blockIdx.y * blockDim.y + threadIdx.y;
+        int batchIdx = blockIdx.z * blockDim.z + threadIdx.z;
+
+        int inputIdx = elemIdx + concatSizes[targetIdx] * targetIdx + batchIdx * numTargets;
+
+        int pastCells = 0;
+        // very unfriendky to cuda kernels...
+        for(int i =0; i<targetIdx;i++)
+            pastCells += concatSizes[targetIdx] * batchSize;
+
+
+        int resultIdx = elemIdx + batchIdx * concatSizes[targetIdx] + targetIdx * pastCells;
+        if(targetIdx < numTargets 
+                && batchIdx < batchSize 
+                && elemIdx < concatSizes[targetIdx] // hmm, not very cuda kernel friendly 
+
+          ) {
+          result[resultIdx] = inputSeed[inputIdx];
+        }
+
+
+    }
 
     __global__ void doFill(int rows, int cols, float value, float* result)
     {
@@ -537,19 +561,19 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 for(auto targetName:opCnfg.targets){ 
                     if(auto it = opsMap.find(targetName); it != opsMap.end()) {
                       Operation* target = it->second;
-                      targetResults += target->resultSize;
+                      targetResults += target->resultSize * _batchSize;
                     }
                 }
                 op.resultSize = targetResults;
-                op.workingSize = opCnfg.targets.size();
-                totalSize += targetResults * batchSizeMultiplier;
-                resultSize += targetResults * batchSizeMultiplier;
-            } else {
-              totalSize += (op.workingSize + op.resultSize + op.gradSize) * batchSizeMultiplier;
-              gradSize += op.gradSize * batchSizeMultiplier;
-              workingSize += op.workingSize * batchSizeMultiplier;
-              resultSize += op.resultSize * batchSizeMultiplier;
-            }
+                op.gradSize = targetResults;
+                op.workingSize = 0;
+                
+            } 
+            totalSize += (op.workingSize + op.resultSize + op.gradSize) * batchSizeMultiplier;
+            gradSize += op.gradSize * batchSizeMultiplier;
+            workingSize += op.workingSize * batchSizeMultiplier;
+            resultSize += op.resultSize * batchSizeMultiplier;
+            
         }
         cudaMalloc((void**)&d_value,  totalSize  * sizeof(float));
         cudaMemset(d_value, 0, totalSize * sizeof(float));
@@ -1008,18 +1032,47 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             }break;
             case OperationType::Concat: {
                 ConcatConfig opCnfg = get<ConcatConfig>(op.config);
+                int targetSizes[32];
+                int d_size = opCnfg.targets.size();
                 int memIndex = 0;
-                for (auto target : opCnfg.targets) {
+                float* d_newSeed = memLocs[op.name+"_grad"];
+
+                for (int i=0; i < d_size; i++) {
                     const auto targetOp = 
                         find_if( ops.begin()
                                , ops.end()
-                               , [target](auto needle) {
-                                       return needle.name == target;
+                               , [opCnfg,i](auto needle) {
+                                       return needle.name == opCnfg.targets[i];
                                  });
                     if(targetOp == ops.end()) break;
-                    computeGrad(target, seed + memIndex);
-                    memIndex += targetOp->rows * targetOp->cols * batchSize; 
+                    targetSizes[i] = targetOp->resultSize;
                 }
+
+                 
+                cudaMemcpyToSymbol(concatSizes, targetSizes, d_size * sizeof(int));
+
+                dim3 bd(16,16,4);
+                dim3 gd(ceil((float)targetSizes[0] / 16.0), ceil((float)d_size / 16.0), ceil(batchSize / 4.0));
+
+
+                doConcatDeinterleave<<<gd, bd>>>(seed, d_size, d_newSeed, batchSize);
+                cudaErrCk( cudaPeekAtLastError() );
+
+
+                for (auto target : opCnfg.targets) {
+                  const auto targetOp = 
+                      find_if( ops.begin()
+                             , ops.end()
+                             , [target](auto needle) {
+                                     return needle.name == target;
+                               });
+                  if(targetOp == ops.end()) break;
+                  computeGrad(target, d_newSeed + memIndex);
+                  memIndex += targetOp->rows * targetOp->cols;
+                }
+
+
+
             }break;
 
         }
@@ -1050,8 +1103,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                     // A_1 B_1 A_2 B_2 ... A_n B_n.
                     // so our operation here is actually just to do the interleaving.
                     // this is trivial is batchSize = 1.
-                    if( batchSize == 1)
-                        break;
                     ConcatConfig opConfig = get<ConcatConfig>(op.config);
 
                     vector<float*> hostTargets;
