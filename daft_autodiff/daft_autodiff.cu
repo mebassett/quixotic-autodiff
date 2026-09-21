@@ -65,9 +65,9 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             case OperationType::InnerProduct:
                 o << "InnerProduct";
                 break;
-            // case OperationType::Convolution:
-            //     o << "Convolution";
-            //     break;
+            case OperationType::Convolution:
+                o << "Convolution";
+                break;
             case OperationType::MaxPool:
                 o << "MaxPool";
                 break;
@@ -176,18 +176,23 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
     }
 
     __global__ void doPadInput(float* input, float* paddedInput, int inputRows,
-        int inputCols, int rowPadding, int colPadding)
+        int inputCols, int rowPadding, int colPadding, int batchSize)
     {
         int row = blockIdx.y * blockDim.y + threadIdx.y;
         int col = blockIdx.x * blockDim.x + threadIdx.x;
+        int resultIdx = blockIdx.z * blockDim.z + threadIdx.z;
+
         int rows = inputRows + 2 * rowPadding;
         int cols = inputCols + 2 * colPadding;
     
-        if (row < rows && col < cols) {
+        if (row < rows && col < cols && resultIdx < batchSize) {
+            int outIdx = rows * cols * resultIdx + row*cols + col;
+            int inIdx = inputCols * inputRows * resultIdx + (row - rowPadding) * inputCols + col - colPadding; 
+
             if (row - rowPadding >= 0 && row < inputRows + rowPadding && col - colPadding >= 0 && col < inputCols + colPadding)
-                paddedInput[row * cols + col] = input[(row - rowPadding) * inputCols + col - colPadding];
+                paddedInput[outIdx] = input[inIdx];
             else
-                paddedInput[row * cols + col] = 0;
+                paddedInput[outIdx] = 0;
         }
     }
 
@@ -299,13 +304,14 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
 
     void convolutionPadInput( uint inputRows, uint inputCols
                             , uint rowPadding, uint colPadding
-                            , float* input, float* output) {
+                            , float* input, float* output, int batchSize) {
         uint outputRows = inputRows + rowPadding*2;
         uint outputCols = inputCols + colPadding*2;
-        dim3 gd(ceil(outputCols / 32.0), ceil(outputRows / 32.0), 1);
-        dim3 bd(32, 32, 1);
+        dim3 gd(ceil(outputCols / 16.0), ceil(outputRows / 16.0),  ceil(batchSize / 4.0));
+        dim3 bd(16, 16, 4);
+
         doPadInput<<<gd, bd>>>(input, output, inputRows
-                    , inputCols, rowPadding, colPadding);
+                    , inputCols, rowPadding, colPadding, batchSize);
         cudaErrCk( cudaPeekAtLastError() );
         cudaDeviceSynchronize(); //do you actually need this? 
     }
@@ -954,7 +960,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
 
                 float* paddedInput = memLocs[op.name+"_working"];
                 float* unrolledKernel = memLocs[op.name+"_working"]
-                                    + opCnfg.paddedInputSize;
+                                    + opCnfg.paddedInputSize * batchSize;
 
                 cublasErrCk( cublasSgemm( *cublasH
                             , CUBLAS_OP_T
@@ -1304,11 +1310,12 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                                        , opCnfg.rowPadding
                                        , opCnfg.colPadding
                                        , input
-                                       , paddedInput);
+                                       , paddedInput
+                                       , batchSize);
 
                     // unroll the kernel..another slow copy to working.
                     float* kernel = memLocs[opCnfg.kernel+"_result"];
-                    float* unrolledKernel = memLocs[op.name+"_working"] + opCnfg.paddedInputSize;
+                    float* unrolledKernel = memLocs[op.name+"_working"] + opCnfg.paddedInputSize * batchSize;
                     convolutionUnrollKernel( opCnfg.unrKrnlRows
                             , opCnfg.unrKrnlCols
                             , opCnfg.kernelRows
@@ -1325,18 +1332,43 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                     float beta = 0;
                     float* output = memLocs[op.name+"_result"];
 
-                    cublasErrCk( cublasSgemv( *cublasH
+                    float* As[batchSize];
+                    float* xs[batchSize];
+                    float* ys[batchSize];
+
+                    for(int i=0;i<batchSize;i++){
+                      xs[i] = paddedInput + i * opCnfg.paddedInputSize;
+                      As[i] = unrolledKernel;
+                      ys[i] = output + i * op.resultSize;
+                    }
+                    
+                    float** d_As;
+                    float** d_xs;
+                    float** d_ys;
+                    cudaMalloc((void**)&d_As, batchSize * sizeof(float*));
+                    cudaMalloc((void**)&d_xs, batchSize * sizeof(float*));
+                    cudaMalloc((void**)&d_ys, batchSize * sizeof(float*));
+                    
+                    cudaMemcpy(d_As, As, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
+                    cudaMemcpy(d_xs, xs, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
+                    cudaMemcpy(d_ys, ys, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
+
+                    cublasErrCk( cublasSgemvBatched( *cublasH
                                 , CUBLAS_OP_T
                                 , opCnfg.unrKrnlCols
                                 , opCnfg.unrKrnlRows
                                 , &alpha
-                                , unrolledKernel
+                                , d_As
                                 , opCnfg.unrKrnlCols
-                                , paddedInput
+                                , d_xs
                                 , 1
                                 , &beta
-                                , output
-                                , 1 ) );
+                                , d_ys
+                                , 1
+                                , batchSize ) );
+                    cudaFree (d_As);
+                    cudaFree (d_xs);
+                    cudaFree (d_ys);
 
                 break;}
                 case OperationType::MaxPool: {

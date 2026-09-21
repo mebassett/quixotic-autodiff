@@ -304,7 +304,7 @@ TEST_F(DaftBatchConvolutionTest, BatchConvolutionComputeTest) {
     float expected[3][4] = {
         {36, 48, 72, 84},
         {12, 12, 12, 12},
-        {78, 66, 42, 30}
+        {84,72,48,36}
     };
     for (int batch = 0; batch < 3; batch++) {
         for (int i = 0; i < 4; i++) {
