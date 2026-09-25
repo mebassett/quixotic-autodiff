@@ -363,20 +363,20 @@ TEST_F(DaftBatchConvolutionGradTest, BatchConvolutionGradTest) {
     // batch 0: kernelGrad = {1,2,3,4}, inputGrad = {3,3,3,3}
     // batch 1: kernelGrad = {5,6,7,8}, inputGrad = {3,3,3,3}
     // batch 2: kernelGrad = {-1,1,2,-2}, inputGrad = {3,3,3,3}
-    float expectedKernelGrad[3][4] = {
-        {1, 2, 3, 4},
-        {5, 6, 7, 8},
-        {-1, 1, 2, -2}
+    float expectedKernelGrad[1][4] = {
+        {5, 9, 12, 10}
     };
     float expectedInputGrad[3][4] = {
         {3, 3, 3, 3},
         {3, 3, 3, 3},
         {3, 3, 3, 3}
     };
+    for (int i = 0; i < 4; i++) {
+        EXPECT_EQ(kernelGrad[0][i], expectedKernelGrad[0][i])
+                << "Batch convolution kernel grad batch " << 0 << ", element " << i;
+    }
     for (int batch = 0; batch < 3; batch++) {
         for (int i = 0; i < 4; i++) {
-            EXPECT_EQ(kernelGrad[batch][i], expectedKernelGrad[batch][i])
-                << "Batch convolution kernel grad batch " << batch << ", element " << i;
             EXPECT_EQ(inputGrad[batch][i], expectedInputGrad[batch][i])
                 << "Batch convolution input grad batch " << batch << ", element " << i;
         }

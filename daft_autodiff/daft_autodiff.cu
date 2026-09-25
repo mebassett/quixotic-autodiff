@@ -222,34 +222,42 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
 
     __global__ void doKernelRoll(float* matrix, float* kernel, int kernelRows,
         int kernelCols, int mCols, int mRows, int colSkip,
-        int rowSkip, int inCols, int outCols)
+        int rowSkip, int inCols, int outCols, int batchSize)
     {
         int mcol = blockIdx.x * blockDim.x + threadIdx.x;
-        if (mcol < mCols) {
+        int resultIdx = blockIdx.z * blockDim.z + threadIdx.z;
+        const int matrixSize = mCols * mRows;
+        if (mcol < mCols && resultIdx < batchSize) {
             int kRow = mcol / inCols;
             int kCol = mcol % inCols;
             if (kRow >= 0 && kRow < kernelRows && kCol >= 0 && kCol < kernelCols) {
                 float val = 0;
+                
                 for (int mrow = 0; mrow < mRows; mrow++) {
                     int ocol = mrow % outCols;
                     int orow = mrow / outCols;
     
                     int offset = colSkip * ocol + rowSkip * orow * inCols;
+
+                    int matrixIdx = mrow * mCols + mcol + offset;
     
-                    val += matrix[mrow * mCols + mcol + offset];
+                    val += matrix[matrixIdx + resultIdx * matrixSize];
                 }
-                kernel[kRow * kernelCols + kCol] = val;
+                kernel[kRow * kernelCols + kCol + resultIdx * kernelCols * kernelRows] = val;
             }
         }
     }
 
     __global__ void doCopyWithoutPadding(float* paddedSource, float* dest, int rows,
-        int cols, int rowPadding, int colPadding)
+        int cols, int rowPadding, int colPadding, int batchSize)
     {
         int row = blockIdx.y * blockDim.y + threadIdx.y;
         int col = blockIdx.x * blockDim.x + threadIdx.x;
-        if (row < rows && col < cols) {
-            dest[row * cols + col] = paddedSource[(row + rowPadding) * (cols + 2 * colPadding) + col + colPadding];
+        int resultIdx = blockIdx.z * blockDim.z + threadIdx.z;
+        int destSize = rows * cols;
+        int srcSize = (rows+rowPadding)*(cols+colPadding);
+        if (row < rows && col < cols && resultIdx < batchSize) {
+            dest[row * cols + col + resultIdx * destSize] = paddedSource[(row + rowPadding) * (cols + 2 * colPadding) + col + colPadding + resultIdx * srcSize];
         }
     }
 
@@ -726,9 +734,13 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
         }
         float* resultsTemp = new float [ batchSize * op->gradSize];
         float* d_value = memLocs[name+"_grad"];
-        cudaMemcpy(resultsTemp, d_value, sizeof(float)*op->gradSize*batchSize,cudaMemcpyDeviceToHost);
+        int batchSizeOverride = batchSize;
+        if(op->opType == OperationType::WeightsMatrix)
+          batchSizeOverride = 1;
 
-        for(int i=0;i<batchSize;i++)
+        cudaMemcpy(resultsTemp, d_value, sizeof(float)*op->gradSize*batchSizeOverride,cudaMemcpyDeviceToHost);
+
+        for(int i=0;i<batchSizeOverride;i++)
             results->push_back(vector(resultsTemp + i * op->gradSize, resultsTemp + ((i+1)*op->gradSize)));
 
         delete [] resultsTemp;
@@ -793,25 +805,22 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 computeGrad(opConfig.target1, vec2);
             } break;
             case OperationType::InputColumn: {
+                float alpha = 1;
                 float *grad = memLocs[name+"_grad"];
-
-                dim3 bd(1, 32, 32);
-                dim3 gd(1, ceil(op.gradSize / 32.0), ceil(batchSize / 32.0));
-
-                doBatchedSaxpy<<<gd, bd>>>(op.gradSize, batchSize, seed, grad);
-                cudaErrCk( cudaPeekAtLastError() );
-
+                cublasErrCk( cublasSaxpy(*cublasH, op.gradSize*batchSize, &alpha, seed, 1, grad, 1) );
 
             } break;
             case OperationType::InputMatrix: {
                 float alpha = 1;
                 float *grad = memLocs[name+"_grad"];
-                cublasErrCk( cublasSaxpy(*cublasH, op.gradSize, &alpha, seed, 1, grad, 1) );
+                cublasErrCk( cublasSaxpy(*cublasH, op.gradSize*batchSize, &alpha, seed, 1, grad, 1) );
             } break;
             case OperationType::WeightsMatrix: {
                 float alpha = 1;
                 float *grad = memLocs[name+"_grad"];
-                cublasErrCk( cublasSaxpy(*cublasH, op.gradSize, &alpha, seed, 1, grad, 1) );
+                // we don't batch weights, because that's silly.  so we are summing all these up
+                for(int i = 0; i <batchSize; i++)
+                  cublasErrCk( cublasSaxpy(*cublasH, op.gradSize, &alpha, seed+i*op.gradSize, 1, grad, 1) );
             } break;
             case OperationType::MatrixProduct: {
                 BinaryMatrixConfig opConfig = get<BinaryMatrixConfig>(op.config);
@@ -947,11 +956,11 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 float alpha = 1;
                 float beta = 0;
 
-                int startInput = opCnfg.kernelRows * opCnfg.kernelCols;
+                int startInput = opCnfg.kernelRows * opCnfg.kernelCols * batchSize;
                 int startMatrix = startInput 
-                    + (opCnfg.multiplicandRows * opCnfg.multiplicandCols);
+                    + (opCnfg.multiplicandRows * opCnfg.multiplicandCols * batchSize );
                 int startCol = startMatrix
-                    + (opCnfg.unrKrnlRows * opCnfg.unrKrnlCols);
+                    + (opCnfg.unrKrnlRows * opCnfg.unrKrnlCols )*batchSize;
 
                 float* rolledKernelMatrixGrad = memLocs[op.name+"_grad"];
                 float* inputGrad = memLocs[op.name+"_grad"] + startInput;
@@ -962,23 +971,49 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 float* unrolledKernel = memLocs[op.name+"_working"]
                                     + opCnfg.paddedInputSize * batchSize;
 
-                cublasErrCk( cublasSgemm( *cublasH
+                float* h_seed[batchSize];
+                float* h_paddedInput[batchSize];
+                float* h_matrixGrad[batchSize];
+                int matrixGradSize = opCnfg.unrKrnlCols * opCnfg.unrKrnlRows;
+                int paddedInputSize = opCnfg.unrKrnlCols;
+                int seedSize = opCnfg.unrKrnlRows;
+
+                for(int i =0;i<batchSize;i++) {
+                  h_seed[i] = seed + i * seedSize;
+                  h_paddedInput[i] = paddedInput + i * paddedInputSize;
+                  h_matrixGrad[i] = matrixGrad + i * matrixGradSize;
+                }
+                float** d_seed;
+                float** d_paddedInput;
+                float** d_matrixGrad;
+                cudaMalloc((void**)&d_seed, batchSize * sizeof(float*));
+                cudaMalloc((void**)&d_paddedInput, batchSize * sizeof(float*));
+                cudaMalloc((void**)&d_matrixGrad, batchSize * sizeof(float*));
+                
+                cudaMemcpy(d_seed, h_seed, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
+                cudaMemcpy(d_paddedInput, h_paddedInput, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
+                cudaMemcpy(d_matrixGrad, h_matrixGrad, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
+
+                cublasErrCk( cublasSgemmBatched( *cublasH
                             , CUBLAS_OP_T
                             , CUBLAS_OP_N
                             , opCnfg.unrKrnlCols
                             , opCnfg.unrKrnlRows
                             , 1
                             , &alpha
-                            , paddedInput
+                            , d_paddedInput
                             , 1
-                            , seed
+                            , d_seed
                             , 1
                             , &beta
-                            , matrixGrad
-                            , opCnfg.unrKrnlCols));
+                            , d_matrixGrad
+                            , opCnfg.unrKrnlCols
+                            , batchSize));
  
-                dim3 gd(ceil(opCnfg.unrKrnlCols / 1024.0), 1, 1);
-                dim3 bd(1024, 1, 1);
+                dim3 bd(32, 1, 32);
+                dim3 gd(ceil(opCnfg.unrKrnlCols / 32.0), 1, ceil(batchSize / 32.0));
+
+                    
                 doKernelRoll<<<gd, bd>>>( matrixGrad
                     , rolledKernelMatrixGrad
                     , opCnfg.kernelRows
@@ -988,36 +1023,62 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                     , opCnfg.colSkip
                     , opCnfg.rowSkip
                     , opCnfg.multiplicandCols + 2 * opCnfg.colPadding
-                    , op.cols);
+                    , op.cols
+                    , batchSize);
                 cudaErrCk( cudaPeekAtLastError() );
+
+
+                cudaFree(d_paddedInput);
+                cudaFree(d_matrixGrad);
+
                 computeGrad(opCnfg.kernel, rolledKernelMatrixGrad);
 
+                float* h_unrolledKernel[batchSize];
+                float* h_colGrad[batchSize];
+                for(int i =0;i<batchSize;i++) {
+                  h_unrolledKernel[i] = unrolledKernel;
+                  h_colGrad[i] = colGrad + i * opCnfg.unrKrnlCols;
+                }
+                float** d_unrolledKernel;
+                float** d_colGrad;
+                cudaMalloc((void**)&d_unrolledKernel, batchSize * sizeof(float*));
+                cudaMalloc((void**)&d_colGrad, batchSize * sizeof(float*));
+                cudaMemcpy(d_unrolledKernel, h_unrolledKernel, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
+                cudaMemcpy(d_colGrad, h_colGrad, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
+
                 cublasErrCk(
-                  cublasSgemm( *cublasH
+                  cublasSgemmBatched( *cublasH
                       , CUBLAS_OP_N
                       , CUBLAS_OP_T
                       , 1
                       , opCnfg.unrKrnlCols
                       , opCnfg.unrKrnlRows
                       , &alpha
-                      , seed
+                      , d_seed
                       , 1
-                      , unrolledKernel
+                      , d_unrolledKernel
                       , opCnfg.unrKrnlCols
                       , &beta
-                      , colGrad
-                      , 1)
+                      , d_colGrad
+                      , 1
+                      , batchSize)
                 );
-                dim3 gd2( ceil(opCnfg.multiplicandCols / 32.0)
-                        , ceil(opCnfg.multiplicandRows / 32.0)
-                        , 1);
-                dim3 bd2(32, 32, 1);
+
+                cudaFree(d_seed);
+                cudaFree(d_unrolledKernel);
+                cudaFree(d_colGrad);
+
+                dim3 gd2( ceil(opCnfg.multiplicandCols / 16.0)
+                        , ceil(opCnfg.multiplicandRows / 16.0)
+                        , ceil(batchSize / 4.0));
+                dim3 bd2(16, 16, 4);
                 doCopyWithoutPadding<<<gd2, bd2>>>( colGrad
                         , inputGrad
                         , opCnfg.multiplicandRows
                         , opCnfg.multiplicandCols
                         , opCnfg.rowPadding
-                        , opCnfg.colPadding);
+                        , opCnfg.colPadding
+                        , batchSize);
                 cudaErrCk( cudaPeekAtLastError() );
                 computeGrad(opCnfg.multiplicand, inputGrad);
             }break;
