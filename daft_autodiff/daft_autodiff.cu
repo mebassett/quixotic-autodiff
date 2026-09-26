@@ -852,7 +852,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                   if(targetOp1->opType == OperationType::WeightsMatrix)
                     matrixValues[i] = matrixValue;
                   else
-                    matrixValues[i] = matrixValue + i * batchSize;
+                    matrixValues[i] = matrixValue + i * targetOp1->rows * targetOp1->cols;
                     
                   colValues[i] = colValue + i * targetOp2->resultSize;
                   seeds[i] = seed + i * opConfig.target1Rows;

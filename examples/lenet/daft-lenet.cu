@@ -24,7 +24,7 @@ void initialize_weights(Function* f, const string& name, float lower_bound, floa
             for (int i = 0; i < weights.size(); i++) {
                 weights[i] = get_rand();
             }
-            f->setValue(name, weights);
+            f->setValue(name, {weights});
             break;
         }
     }
@@ -66,12 +66,12 @@ int main() {
     cublasCreate(&cublasH);
     Function f = Function(&cublasH);
 
-    f.addOp(Operation::matrix("featureInput", 28, 28));
+    f.addOp(Operation::inputMatrix("featureInput", 28, 28));
     f.addOp(Operation::column("targetInput", 10));
 
     // C1 layer - 6 feature maps with 5x5 kernels
     for (int i = 0; i < 6; i++) {
-        f.addOp(Operation::matrix("c1-kernel-" + to_string(i), 5, 5));
+        f.addOp(Operation::weightsMatrix("c1-kernel-" + to_string(i), 5, 5));
     }
     for (int i = 0; i < 6; i++) {
         f.addOp(Operation::convolution("c1-conv-" + to_string(i)
@@ -96,7 +96,7 @@ int main() {
 
     // C3 layer - 16 feature maps with 5x5 kernels
     for (int i = 0; i < 16; i++) {
-        f.addOp(Operation::matrix("c3-kernel-" + to_string(i), 5, 5));
+        f.addOp(Operation::weightsMatrix("c3-kernel-" + to_string(i), 5, 5));
     }
 
     // C3 connections - first 6 are combinations of 3 continuous channels
@@ -236,15 +236,15 @@ int main() {
     f.addOp(Operation::concat("s4-flattened", s4_targets, 400));
 
     // Fully connected layers
-    f.addOp(Operation::matrix("fc1-weights", 120, 400));
+    f.addOp(Operation::weightsMatrix("fc1-weights", 120, 400));
     f.addOp(Operation::matrixProduct("fc1-output", "fc1-weights", "s4-flattened", 120, 400, 1));
     f.addOp(Operation::applyLeakyReLU("fc1-relu", "fc1-output", 120, 1));
 
-    f.addOp(Operation::matrix("fc2-weights", 84, 120));
+    f.addOp(Operation::weightsMatrix("fc2-weights", 84, 120));
     f.addOp(Operation::matrixProduct("fc2-output", "fc2-weights", "fc1-relu", 84, 120, 1));
     f.addOp(Operation::applyLeakyReLU("fc2-relu", "fc2-output", 84, 1));
 
-    f.addOp(Operation::matrix("output-weights", 10, 84));
+    f.addOp(Operation::weightsMatrix("output-weights", 10, 84));
     f.addOp(Operation::matrixProduct("prediction", "output-weights", "fc2-relu", 10, 84, 1));
 
     // Loss function
