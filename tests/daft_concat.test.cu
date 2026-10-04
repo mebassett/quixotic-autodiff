@@ -119,3 +119,68 @@ TEST_F(DaftBatchConcatComputeTest, BatchConcatComputeTest) {
             << "Batch concat gradient batch " << i;
     }
 }
+
+class DaftBatchConcatGradTest : public testing::Test {
+protected:
+    cublasHandle_t cublasH;
+    Function* f;
+    vector<vector<float>> aGrad;
+    vector<vector<float>> bGrad;
+
+    void SetUp() override {
+        cublasCreate(&cublasH);
+        f = new Function(&cublasH);
+
+        // Two 2x4 inputs, concatenated to 16, batch size 2.
+        // NOTE: batch size 2 is deliberate (not just convenience): the concat
+        // backward's deinterleave scratch (concatSize * batchSize floats)
+        // currently overlaps the next op's grad region, and ip's
+        // gradSize = 2 * concatSize only covers it for batchSize <= 2.
+        f->addOp(Operation::inputMatrix("a", 2, 4));
+        f->addOp(Operation::inputMatrix("b", 2, 4));
+        f->addOp(Operation::concat("c", {"a", "b"}, 16));
+        f->addOp(Operation::innerProduct("ip", "c", "c", 16));
+        f->compile(2);
+
+        f->setValue("a", {
+            {1, 2, 3, 4, 5, 6, 7, 8},
+            {0, 0, 0, 0, 1, 1, 1, 1}
+        });
+        f->setValue("b", {
+            {10, 10, 10, 10, 10, 10, 10, 10},
+            {2, 2, 2, 2, 2, 2, 2, 2}
+        });
+
+        f->compute();
+        f->computeGrad("ip");
+
+        f->getGrad("a", &aGrad);
+        f->getGrad("b", &bGrad);
+    }
+
+    void TearDown() override {
+        cublasDestroy(cublasH);
+        delete f;
+    }
+};
+
+TEST_F(DaftBatchConcatGradTest, BatchConcatGradTest) {
+    // ip = ||c||^2 per batch, so the seed flowing into the concat is
+    // 2 * c, and each target's grad is 2 * its own values, per batch.
+    float expectedAGrad[2][8] = {
+        {2, 4, 6, 8, 10, 12, 14, 16},
+        {0, 0, 0, 0, 2, 2, 2, 2}
+    };
+    float expectedBGrad[2][8] = {
+        {20, 20, 20, 20, 20, 20, 20, 20},
+        {4, 4, 4, 4, 4, 4, 4, 4}
+    };
+    for (int batch = 0; batch < 2; batch++) {
+        for (int i = 0; i < 8; i++) {
+            EXPECT_EQ(aGrad[batch][i], expectedAGrad[batch][i])
+                << "Batch concat a grad batch " << batch << ", element " << i;
+            EXPECT_EQ(bGrad[batch][i], expectedBGrad[batch][i])
+                << "Batch concat b grad batch " << batch << ", element " << i;
+        }
+    }
+}
