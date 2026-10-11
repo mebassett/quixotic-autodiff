@@ -253,7 +253,7 @@ int main() {
     f.addOp(Operation::innerProduct("squared-error", "error-term", "error-term", 10));
     f.addOp(Operation::scalarMultiply("loss", "squared-error", 1, 1, 0.5f));
 
-    f.compile();
+    f.compile(10);
 
     cout << "Model built, now initializing weights...\n";
     
@@ -269,8 +269,8 @@ int main() {
     initialize_weights(&f, "output-weights", -0.05, 0.05);
 
     cout << "Loading training and test data...\n";
-    Training_Data rows = load_data_from_file_no_bias("../data/mnist_train.txt", 60000);
-    Training_Data testRows = load_data_from_file_no_bias("../data/mnist_test.txt", 10000);
+    Training_Data rows = load_data_from_file_no_bias("../data/mnist_train.txt", 6000);
+    Training_Data testRows = load_data_from_file_no_bias("../data/mnist_test.txt", 10);
 
     cout << "Testing initial model performance...\n";
     int numRight = 0;
@@ -320,7 +320,7 @@ int main() {
     int epochs = 1;
     auto startTime = chrono::steady_clock::now();
     
-    while (epochs <= 20) {
+    while (epochs <= 1) {
         auto epochStartTime = chrono::steady_clock::now();
         cout << "Starting epoch " << epochs << "...\n";
 

@@ -262,7 +262,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
         int col = blockIdx.x * blockDim.x + threadIdx.x;
         int resultIdx = blockIdx.z * blockDim.z + threadIdx.z;
         int destSize = rows * cols;
-        int srcSize = (rows+rowPadding)*(cols+colPadding);
+        int srcSize = (rows+2*rowPadding)*(cols+2*colPadding);
         if (row < rows && col < cols && resultIdx < batchSize) {
             dest[row * cols + col + resultIdx * destSize] = paddedSource[(row + rowPadding) * (cols + 2 * colPadding) + col + colPadding + resultIdx * srcSize];
         }
@@ -582,7 +582,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 for(auto targetName:opCnfg.targets){ 
                     if(auto it = opsMap.find(targetName); it != opsMap.end()) {
                       Operation* target = it->second;
-                      targetResults += target->resultSize * _batchSize;
+                      targetResults += target->resultSize;
                     }
                 }
                 op.resultSize = targetResults;
@@ -596,7 +596,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             resultSize += op.resultSize * batchSizeMultiplier;
             
         }
-        cudaMalloc((void**)&d_value,  totalSize  * sizeof(float));
+        cudaMalloc((void**)&d_value, totalSize * sizeof(float));
         cudaMemset(d_value, 0, totalSize * sizeof(float));
         
         int idxGradSize = 0, idxWorkingSize = 0, idxResultSize = 0;
@@ -700,16 +700,13 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
         if(op->opType != OperationType::WeightsMatrix) return;
 
         float* result  = memLocs[name+"_result"];
-
-        for(int i=0;i<batchSize;i++){
-          float* grad  = memLocs[name+"_grad"] + i * op->rows * op->cols;
-          cublasErrCk ( cublasSgeam( *cublasH
-                       , CUBLAS_OP_N
-                       , CUBLAS_OP_N
-                       , op->cols, op->rows, &alpha
-                       , result, op->cols, &beta
-                       , grad, op->cols, result, op->cols) );
-        }
+        float* grad  = memLocs[name+"_grad"];
+        cublasErrCk ( cublasSgeam( *cublasH
+                 , CUBLAS_OP_N
+                 , CUBLAS_OP_N
+                 , op->cols, op->rows, &alpha
+                 , result, op->cols, &beta
+                 , grad, op->cols, result, op->cols) );
 
     }
 
@@ -1468,7 +1465,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
 
         map<string, Operation*> targetOps;
         int totalTargetSize = 0;
-        int batchSize = 0;
+        int batchComputeSize = 0;
         int totalSize = 0;
         for(const auto target : targets) {
           const auto targetOp = find_if(ops.begin(), ops.end(), [target](auto needle) { return needle.name == target;});
@@ -1487,11 +1484,17 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
         map<string, int> inputSizes;
         float* d_inputs;
         for( auto const& [varName, data] : inputs) {
-            batchSize = data.size();
+            batchComputeSize = data.size();
             totalSize += data.size() * data[0].size();
         }
+        if( batchComputeSize % batchSize != 0) {
+            cout << "batchCompute's size must be a multiple of the compiled batchSize" << endl;
+            exit(1);
+            return;
+        }
+
         for ( const auto target : targets ){
-            totalTargetSize += targetOps[target]->resultSize * batchSize;
+            totalTargetSize += targetOps[target]->resultSize * batchComputeSize;
         }
         totalSize += totalTargetSize; 
         cudaErrCk ( cudaMalloc((void**)&d_inputs,  totalSize  * sizeof(float)) ) ;
@@ -1512,11 +1515,12 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
         }
         for(const auto target : targets) {
             inputLocs[target] = d_inputs + totalSize;
-            totalSize += targetOps[target]->resultSize * batchSize;
+            totalSize += targetOps[target]->resultSize * batchComputeSize;
 
         }
 
-        for(int i = 0; i < batchSize; i++) {
+
+        for(int i = 0; i < batchComputeSize; i = i + batchSize ) {
             for( const auto target: targets) {
                 memLocs[target + "_result"] = inputLocs[target] + i * targetOps[target]->resultSize ;
             }
@@ -1525,18 +1529,18 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             }
           resetGrad();
           compute();
-          (*batchFunction)(this, i, batchSize);
+          (*batchFunction)(this, i, batchComputeSize);
         }
         for (const auto target: targets) {
             vector<vector<float>>* rows = results.at(target);
-            float* temp = new float [batchSize * targetOps[target]->resultSize ];
+            float* temp = new float [batchComputeSize * targetOps[target]->resultSize ];
             cudaErrCk(
               cudaMemcpy( temp
                         , inputLocs[target]
-                        , batchSize * targetOps[target]->resultSize * sizeof(float)
+                        , batchComputeSize * targetOps[target]->resultSize * sizeof(float)
                         , cudaMemcpyDeviceToHost)
             );
-            for(int i=0;i<batchSize;i++) { 
+            for(int i=0;i<batchComputeSize;i++) { 
                 rows->push_back(vector(temp + i * targetOps[target]->resultSize, temp + ((i+1)*targetOps[target]->resultSize)));
             }
             delete [] temp;

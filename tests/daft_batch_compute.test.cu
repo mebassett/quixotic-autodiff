@@ -134,3 +134,93 @@ TEST_F(DaftBatchMatrixComputeTest, BatchMatrixComputeTest) {
     EXPECT_EQ((*results["result2"])[2][2], 7) << "A2*(A1*x) batch 2, element 2";
     EXPECT_EQ((*results["result2"])[2][3], 2) << "A2*(A1*x) batch 2, element 3";
 }
+
+// ---------------------------------------------------------------------------
+// batchCompute chunking / result-gathering with batchSize > 1.
+// These guard the core loop: data is processed in `batchSize`-sized chunks and
+// every one of the `batchComputeSize` samples must be gathered into `results`.
+// ---------------------------------------------------------------------------
+class DaftBatchComputeChunkingTest : public testing::Test {
+protected:
+    cublasHandle_t cublasH;
+    Function* f;
+    map<string, vector<vector<float>>*> results;
+
+    // r_i = a_i . b_i  (inner product of two 2-vectors)
+    void build(int batchSize) {
+        f = new Function(&cublasH);
+        f->addOp(Operation::column("a", 2));
+        f->addOp(Operation::column("b", 2));
+        f->addOp(Operation::innerProduct("r", "a", "b", 2));
+        f->compile(batchSize);
+        results["r"] = new vector<vector<float>>;
+    }
+
+    void TearDown() override {
+        if (results.count("r")) { delete results["r"]; results.erase("r"); }
+        delete f;
+        cublasDestroy(cublasH);
+    }
+
+    void SetUp() override { cublasCreate(&cublasH); f = nullptr; }
+};
+
+TEST_F(DaftBatchComputeChunkingTest, GathersAllSamplesWithBatchSize2) {
+    build(2);   // 4 samples -> 2 chunks
+    map<string, vector<vector<float>>> inputs = {
+        {"a", {{1, 2}, {3, 4}, {5, 6}, {7, 8}}},
+        {"b", {{1, 0}, {0, 1}, {1, 1}, {2, 0}}}
+    };
+    f->batchCompute(results, {"r"}, inputs);
+    auto& r = *results["r"];
+    ASSERT_EQ(r.size(), 4u) << "all 4 samples must be gathered, not just batchSize";
+    float expected[4] = {1, 4, 11, 14};
+    for (int i = 0; i < 4; i++)
+        EXPECT_NEAR(r[i][0], expected[i], 1e-5f) << "r sample " << i;
+}
+
+TEST_F(DaftBatchComputeChunkingTest, SingleChunkWhenSizeEqualsBatchSize) {
+    build(4);   // 4 samples -> exactly 1 chunk
+    map<string, vector<vector<float>>> inputs = {
+        {"a", {{1, 1}, {2, 2}, {3, 3}, {4, 4}}},
+        {"b", {{1, 0}, {0, 1}, {1, 1}, {1, -1}}}
+    };
+    f->batchCompute(results, {"r"}, inputs);
+    auto& r = *results["r"];
+    ASSERT_EQ(r.size(), 4u);
+    float expected[4] = {1, 2, 6, 0};
+    for (int i = 0; i < 4; i++)
+        EXPECT_NEAR(r[i][0], expected[i], 1e-5f) << "r sample " << i;
+}
+
+TEST_F(DaftBatchComputeChunkingTest, SingleSample) {
+    build(1);
+    map<string, vector<vector<float>>> inputs = {
+        {"a", {{2, 3}}},
+        {"b", {{4, 5}}}
+    };
+    f->batchCompute(results, {"r"}, inputs);
+    auto& r = *results["r"];
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_NEAR(r[0][0], 2*4 + 3*5, 1e-5f);   // 19
+}
+
+// File-scope no-op batchFunction (C function pointer, as batchCompute requires).
+static int g_noopCalls = 0;
+static void noopFn(Function* /*f*/, int /*idx*/, int /*length*/) { g_noopCalls++; }
+
+TEST_F(DaftBatchComputeChunkingTest, NoopBatchFunctionStillGathersResults) {
+    build(2);
+    g_noopCalls = 0;
+    map<string, vector<vector<float>>> inputs = {
+        {"a", {{1, 0}, {0, 1}, {1, 1}, {2, 0}}},
+        {"b", {{1, 0}, {0, 1}, {1, 0}, {0, 1}}}
+    };
+    f->batchCompute(results, {"r"}, inputs, noopFn);
+    EXPECT_EQ(g_noopCalls, 2) << "no-op callback should still run once per chunk";
+    auto& r = *results["r"];
+    ASSERT_EQ(r.size(), 4u);
+    float expected[4] = {1, 1, 1, 0};
+    for (int i = 0; i < 4; i++)
+        EXPECT_NEAR(r[i][0], expected[i], 1e-5f) << "r sample " << i;
+}

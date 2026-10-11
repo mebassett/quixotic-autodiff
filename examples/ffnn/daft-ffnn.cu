@@ -37,7 +37,7 @@ int fromModelOutput(float* out)
 int main() {
     float learningRate = 0.025;
     cublasHandle_t cublasH;
-    uint BATCHSIZE = 1;
+    uint BATCHSIZE = 10;
 
     cublasCreate(&cublasH);
     Function *f;

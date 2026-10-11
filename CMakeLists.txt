@@ -68,6 +68,9 @@ add_executable(
     tests/daft_max_pool.test.cu
     tests/daft_concat.test.cu
     tests/daft_batch_compute.test.cu
+    tests/daft_grad_descent.test.cu
+    tests/daft_bs1_grad_proposal.test.cu
+    tests/daft_additivity.test.cu
     tests/daft_batch_innerproduct.test.cu
     tests/daft_negative_identity.test.cu
 )
