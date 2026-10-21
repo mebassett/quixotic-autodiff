@@ -91,6 +91,7 @@ struct Operation {
     uint workingSize;
     uint resultSize;
     uint gradSize;
+    uint pointerSize;
     const uint rows;
     const uint cols;
     const string name;
@@ -121,10 +122,13 @@ struct Function {
     uint gradSize;
     uint resultSize;
     uint workingSize;
+    uint pointerSize;
     uint totalSize;
     uint batchSize;
     map<string, float*> memLocs;
+    map<string, float**> pointerLocs;
     float* d_value;
+    float** d_pointers;
     cublasHandle_t* cublasH;
     Function(cublasHandle_t* cublasH);
     void compile(uint _batchSize = 1);
