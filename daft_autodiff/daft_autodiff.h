@@ -96,7 +96,6 @@ struct Operation {
     const uint rows;
     const uint cols;
     const string name;
-    const bool noOp = false;
     const OpConfig config;
 
     static Operation column(string name, uint rows);

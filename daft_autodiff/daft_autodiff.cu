@@ -421,7 +421,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 , .rows=rows
                 , .cols=cols
                 , .name{name}
-                , .noOp = false 
                 , .config{ (BasicConfig){ .target{target} } }
                 };
     }
@@ -436,7 +435,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .rows = 1
                , .cols = 1
                , .name{name}
-               , .noOp = false
                , .config{ (BinaryOpConfig) {.target1{target1}, .target2{target2}, 
                                             .targetRows = rows, .targetCols = 1}}
         };
@@ -453,7 +451,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .rows = rows
                , .cols = cols
                , .name{name}
-               , .noOp = false
                , .config{ (BinaryOpConfig) {.target1{target1}, .target2{target2}, 
                                             .targetRows = rows, .targetCols = 1}}
         };
@@ -469,7 +466,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .rows = rows
                , .cols = cols
                , .name{name}
-               , .noOp = false
                , .config{ (ScalarConfig) { .target{target}, .scale=scale }}
         };
     }
@@ -510,7 +506,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .rows = rows
                , .cols = cols
                , .name{name}
-               , .noOp = false
                , .config{ (ConvolutionConfig) {
                    .multiplicand{multiplicand}
                  , .kernel{kernel}
@@ -543,7 +538,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 , .rows = rows
                 , .cols = cols
                 , .name{name}
-                , .noOp = false
                 , .config{ (MaxPoolConfig) {
                     .target{target}
                   , .width = width
@@ -571,7 +565,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .rows = size 
                , .cols = 1
                , .name{name}
-               , .noOp = false
                , .config { (ConcatConfig) {
                      .targets{targets}
                    , .size=size
@@ -706,21 +699,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
     }
 
     void Function::addOp(Operation op) {
-        if(op.noOp) {
-            Operation& lastOp = ops[ops.size()-1] ;
-            Operation newOp { .opType = op.opType
-                            , .workingSize = 0
-                            , .resultSize = lastOp.resultSize
-                            , .gradSize = lastOp.resultSize
-                            , .rows = lastOp.rows
-                            , .cols = lastOp.cols
-                            , .name{op.name}
-                            , .noOp = true 
-                            , .config = lastOp.config
-                            };
-            ops.push_back(newOp);
-        } else
-            ops.push_back(op);
+      ops.push_back(op);
     }
 
     void Function::setValue(string name, const vector<vector<float>>& values) {
