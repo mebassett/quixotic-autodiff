@@ -360,6 +360,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .resultSize = rows
                , .gradSize = rows
                , .pointerSize = 0
+               , .gradPointerSize = 0
                , .rows = rows
                , .cols = 1
                , .name{name} };
@@ -371,6 +372,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .resultSize = rows*cols
                , .gradSize = rows*cols
                , .pointerSize = 0
+               , .gradPointerSize = 0
                , .rows = rows
                , .cols = cols
                , .name{name} };
@@ -382,6 +384,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .resultSize = rows*cols
                , .gradSize = rows*cols
                , .pointerSize = 0
+               , .gradPointerSize = 0
                , .rows = rows
                , .cols = cols
                , .name{name} };
@@ -393,7 +396,8 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .workingSize = 0 
                , .resultSize = target1Rows*target2Cols
                , .gradSize = target1Rows*target1Cols + target1Cols*target2Cols
-               , .pointerSize = 5
+               , .pointerSize = 3
+               , .gradPointerSize = 5
                , .rows = target1Rows
                , .cols = target2Cols
                , .name{name} 
@@ -413,6 +417,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 , .resultSize = rows*cols
                 , .gradSize = rows*cols
                 , .pointerSize = 0
+                , .gradPointerSize = 0
                 , .rows=rows
                 , .cols=cols
                 , .name{name}
@@ -427,6 +432,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .resultSize = 1
                , .gradSize = 2*rows
                , .pointerSize = 3
+               , .gradPointerSize = 0
                , .rows = 1
                , .cols = 1
                , .name{name}
@@ -443,6 +449,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .resultSize = rows*cols
                , .gradSize = rows*cols
                , .pointerSize = 0
+               , .gradPointerSize = 0
                , .rows = rows
                , .cols = cols
                , .name{name}
@@ -458,6 +465,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .resultSize = rows*cols
                , .gradSize = rows*cols
                , .pointerSize = 0
+               , .gradPointerSize = 0
                , .rows = rows
                , .cols = cols
                , .name{name}
@@ -497,7 +505,8 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .workingSize = paddedInputSize + (unrKrnlRows * unrKrnlCols)
                , .resultSize = rows * cols
                , .gradSize = gradSize
-               , .pointerSize = 5
+               , .pointerSize = 3
+               , .gradPointerSize = 5
                , .rows = rows
                , .cols = cols
                , .name{name}
@@ -530,6 +539,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 , .resultSize = rows * cols
                 , .gradSize = targetRows * targetCols
                 , .pointerSize = 0
+                , .gradPointerSize = 0
                 , .rows = rows
                 , .cols = cols
                 , .name{name}
@@ -557,6 +567,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .resultSize = size // we assume the user set this correctly.
                , .gradSize = 0
                , .pointerSize = targets.size()
+               , .gradPointerSize = targets.size()
                , .rows = size 
                , .cols = 1
                , .name{name}
@@ -578,7 +589,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
         }
 
         this->batchSize = _batchSize;
-        totalSize = 0; gradSize = 0; workingSize = 0; resultSize = 0; pointerSize = 0;
+        totalSize = 0; gradSize = 0; workingSize = 0; resultSize = 0; pointerSize = 0; gradPointerSize = 0;
         for(auto& op : ops){
             int batchSizeMultiplier = batchSize;
             if( op.opType == OperationType::WeightsMatrix ) 
@@ -599,8 +610,10 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 op.gradSize = targetResults;
                 op.workingSize = 0;
                 pointerSize += op.pointerSize;
+                gradPointerSize += op.gradPointerSize;
             }else {
                 pointerSize += op.pointerSize * batchSizeMultiplier;
+                gradPointerSize += op.gradPointerSize * batchSizeMultiplier;
             } 
             totalSize += (op.workingSize + op.resultSize + op.gradSize) * batchSizeMultiplier;
             gradSize += op.gradSize * batchSizeMultiplier;
@@ -609,10 +622,10 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             
         }
         cudaMalloc((void**)&d_value, totalSize * sizeof(float));
-        cudaMalloc((void**)&d_pointers, pointerSize * sizeof(float*));
+        cudaMalloc((void**)&d_pointers, (gradPointerSize+pointerSize) * sizeof(float*));
         cudaMemset(d_value, 0, totalSize * sizeof(float));
         
-        int idxGradSize = 0, idxWorkingSize = 0, idxResultSize = 0, idxPointerSize = 0;
+        int idxGradSize = 0, idxWorkingSize = 0, idxResultSize = 0, idxPointerSize = 0, idxGradPointerSize = 0;
         for(auto op:ops){
             int batchSizeMultiplier = batchSize;
             if( op.opType == OperationType::WeightsMatrix )
@@ -637,10 +650,44 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             idxWorkingSize += op.workingSize * batchSizeMultiplier;
 
             pointerLocs[op.name] = d_pointers + idxPointerSize;
+            pointerLocs[op.name+"_grad"] = d_pointers + pointerSize + idxGradPointerSize;
             if( op.opType == OperationType::Concat ) {
               idxPointerSize +=op.pointerSize ;
+              idxGradPointerSize +=op.gradPointerSize ;
             }else{
               idxPointerSize +=op.pointerSize * batchSizeMultiplier;
+              idxGradPointerSize +=op.gradPointerSize * batchSizeMultiplier;
+            }
+
+
+            switch(op.opType) {
+              case OperationType::MatrixProduct:{
+                // BinaryMatrixConfig opCnfg = get<BinaryMatrixConfig>(op.config);
+                // const auto top1 = find_if(ops.begin(), ops.end()
+                //     , [opCnfg](auto n) { return n.name == opCnfg.target1;});
+                // const auto top2 = find_if(ops.begin(), ops.end()
+                //     , [opCnfg](auto n) { return n.name == opCnfg.target2;});
+                // if(top1 == ops.end() || top2 == ops.end()){
+                //   cout << "cannot compile, MatrixProduct (" << op.name << ")'s ops don't exist" << endl;
+                //   exit(1);
+                //   return;
+
+                // }
+                // for(int i = 0; i< batchSize; i++) {
+                //   if(top1->opType == OperationType::WeightsMatrix)
+                //     pointerLocs[op.name+"_grad"][i] = memLocs[opCnfg.target1+"_result"]; 
+                //   else
+                //     pointerLocs[op.name+"_grad"][i] = memLocs[opCnfg.target1+"_result"] + i * top1->rows * top1->cols;
+                //   pointerLocs[op.name+"_grad"][i+batchSize] =
+                //     memLocs[opCnfg.target2+"_result"] + i * top2->resultSize; 
+                //   // batchSize * 2 is for seeds
+                //   pointerLocs[op.name+"_grad"][i+batchSize*3] =
+                //     memLocs[op.name+"_grad"] + i * opCnfg.target1Rows * opCnfg.target1Cols;
+                //   pointerLocs[op.name+"_grad"][i+batchSize*4] =
+                //     memLocs[op.name+"_grad"] + batchSize + i * opCnfg.target1Cols * opCnfg.target2Cols;
+
+                // }
+              } break;
             }
 
         }
@@ -885,11 +932,11 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                   colGrads[i] = colGrad + i * opConfig.target1Cols * opConfig.target2Cols;
                 }
 
-                float** d_matrixValues = pointerLocs[op.name];
-                float** d_colValues = pointerLocs[op.name] + batchSize;
-                float** d_seeds = pointerLocs[op.name] + batchSize*2; 
-                float** d_matrixGrads = pointerLocs[op.name] + batchSize*3;
-                float** d_colGrads = pointerLocs[op.name] + batchSize*4;
+                float** d_matrixValues = pointerLocs[op.name+"_grad"];
+                float** d_colValues = pointerLocs[op.name+"_grad"] + batchSize;
+                float** d_seeds = pointerLocs[op.name+"_grad"] + batchSize*2; 
+                float** d_matrixGrads = pointerLocs[op.name+"_grad"] + batchSize*3;
+                float** d_colGrads = pointerLocs[op.name+"_grad"] + batchSize*4;
 
                 cudaMemcpy(d_matrixValues, matrixValues, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
                 cudaMemcpy(d_colValues, colValues, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
@@ -998,11 +1045,11 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                   h_paddedInput[i] = paddedInput + i * paddedInputSize;
                   h_matrixGrad[i] = matrixGrad + i * matrixGradSize;
                 }
-                float** d_seed = pointerLocs[op.name];
-                float** d_paddedInput = pointerLocs[op.name] + batchSize;
-                float** d_matrixGrad = pointerLocs[op.name] + batchSize*2;
-                float** d_unrolledKernel = pointerLocs[op.name] + batchSize*3 ;
-                float** d_colGrad = pointerLocs[op.name] + batchSize*4;
+                float** d_seed = pointerLocs[op.name+"_grad"];
+                float** d_paddedInput = pointerLocs[op.name+"_grad"] + batchSize;
+                float** d_matrixGrad = pointerLocs[op.name+"_grad"] + batchSize*2;
+                float** d_unrolledKernel = pointerLocs[op.name+"_grad"] + batchSize*3 ;
+                float** d_colGrad = pointerLocs[op.name+"_grad"] + batchSize*4;
                 
                 cudaMemcpy(d_seed, h_seed, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
                 cudaMemcpy(d_paddedInput, h_paddedInput, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
