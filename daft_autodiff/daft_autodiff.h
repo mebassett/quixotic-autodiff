@@ -133,6 +133,7 @@ struct Function {
     cublasHandle_t* cublasH;
     Function(cublasHandle_t* cublasH);
     void compile(uint _batchSize = 1);
+    void setPointerLocs();
     void resetGrad();
     void addOp(Operation); 
     void setValue(string name, const vector<vector<float>>& values);

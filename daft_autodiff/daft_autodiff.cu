@@ -651,35 +651,55 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
               idxPointerSize +=op.pointerSize * batchSizeMultiplier;
               idxGradPointerSize +=op.gradPointerSize * batchSizeMultiplier;
             }
+        }
+        setPointerLocs();
+    }
+    void Function::setPointerLocs() {
 
-
+        for(auto op:ops){
             switch(op.opType) {
               case OperationType::MatrixProduct:{
-                // BinaryMatrixConfig opCnfg = get<BinaryMatrixConfig>(op.config);
-                // const auto top1 = find_if(ops.begin(), ops.end()
-                //     , [opCnfg](auto n) { return n.name == opCnfg.target1;});
-                // const auto top2 = find_if(ops.begin(), ops.end()
-                //     , [opCnfg](auto n) { return n.name == opCnfg.target2;});
-                // if(top1 == ops.end() || top2 == ops.end()){
-                //   cout << "cannot compile, MatrixProduct (" << op.name << ")'s ops don't exist" << endl;
-                //   exit(1);
-                //   return;
+                BinaryMatrixConfig opCnfg = get<BinaryMatrixConfig>(op.config);
+                // setting up pointers for batch in forward pass (compute)
+                
+                float* d_matrix1 = memLocs[opCnfg.target1+"_result"];
+                float* d_matrix2 = memLocs[opCnfg.target2+"_result"];
+                float* d_result = memLocs[op.name+"_result"];
+                // if target1 is an Input it must not batch, all the pointers must point to the same matrixValue
 
-                // }
-                // for(int i = 0; i< batchSize; i++) {
-                //   if(top1->opType == OperationType::WeightsMatrix)
-                //     pointerLocs[op.name+"_grad"][i] = memLocs[opCnfg.target1+"_result"]; 
-                //   else
-                //     pointerLocs[op.name+"_grad"][i] = memLocs[opCnfg.target1+"_result"] + i * top1->rows * top1->cols;
-                //   pointerLocs[op.name+"_grad"][i+batchSize] =
-                //     memLocs[opCnfg.target2+"_result"] + i * top2->resultSize; 
-                //   // batchSize * 2 is for seeds
-                //   pointerLocs[op.name+"_grad"][i+batchSize*3] =
-                //     memLocs[op.name+"_grad"] + i * opCnfg.target1Rows * opCnfg.target1Cols;
-                //   pointerLocs[op.name+"_grad"][i+batchSize*4] =
-                //     memLocs[op.name+"_grad"] + batchSize + i * opCnfg.target1Cols * opCnfg.target2Cols;
+                // the colValue however should be batched, meaning we can pass it in directly all the time.
+                const auto targetOp1 = find_if(ops.begin(), ops.end()
+                            , [opCnfg](auto needle) { return needle.name == opCnfg.target1;});
+                const auto targetOp2 = find_if(ops.begin(), ops.end()
+                            , [opCnfg](auto needle) { return needle.name == opCnfg.target2;});
+                if(targetOp1 == ops.end() || targetOp2 == ops.end()) {
+                  cout << "compute(MatrixProduct) cannot find op " <<
+                          opCnfg.target1 << " or " << opCnfg.target2 << endl;
 
-                // }
+                  exit(1);
+                  return;
+                }
+                float* As[batchSize];
+                float* Bs[batchSize];
+                float* Cs[batchSize];
+                for(int i=0;i<batchSize;i++){
+                  if(targetOp1->opType == OperationType::InputMatrix || targetOp1->opType == OperationType::WeightsMatrix){
+                    As[i] = d_matrix1;
+                  } else {
+                    As[i] = d_matrix1 + i * targetOp1->resultSize;
+                  }
+                  Bs[i] = d_matrix2 + i * targetOp2->resultSize;
+                  Cs[i] = d_result + i * op.resultSize;
+                }
+                
+                float** d_As = pointerLocs[op.name];
+                float** d_Bs = pointerLocs[op.name] + batchSize;
+                float** d_Cs = pointerLocs[op.name] + batchSize*2;;
+                
+                cudaMemcpy(d_As, As, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
+                cudaMemcpy(d_Bs, Bs, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
+                cudaMemcpy(d_Cs, Cs, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
+                
               } break;
             }
 
@@ -1238,9 +1258,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
 
                     float alpha = 1;
                     float beta = 0;
-                    float* d_matrix1 = memLocs[opConfig.target1+"_result"];
-                    float* d_matrix2 = memLocs[opConfig.target2+"_result"];
-                    float* d_result = memLocs[op.name+"_result"];
 
                     // if target1 is an Input it must not batch, all the pointers must point to the same matrixValue
 
@@ -1256,28 +1273,9 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                       exit(1);
                       return;
                     }
-
-                    float* As[batchSize];
-                    float* Bs[batchSize];
-                    float* Cs[batchSize];
-                    vector<tuple<float*, float*, float*>> targets;
-                    for(int i=0;i<batchSize;i++){
-                      if(targetOp1->opType == OperationType::InputMatrix || targetOp1->opType == OperationType::WeightsMatrix){
-                        As[i] = d_matrix1;
-                      } else {
-                        As[i] = d_matrix1 + i * targetOp1->resultSize;
-                      }
-                      Bs[i] = d_matrix2 + i * targetOp2->resultSize;
-                      Cs[i] = d_result + i * op.resultSize;
-                    }
-                    
                     float** d_As = pointerLocs[op.name];
                     float** d_Bs = pointerLocs[op.name] + batchSize;
                     float** d_Cs = pointerLocs[op.name] + batchSize*2;;
-                    
-                    cudaMemcpy(d_As, As, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                    cudaMemcpy(d_Bs, Bs, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                    cudaMemcpy(d_Cs, Cs, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
 
 
                     cublasErrCk( cublasSgemmBatched( *cublasH
@@ -1534,6 +1532,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             for (auto const& [varName, data] : inputs) {
                 memLocs[varName + "_result"] = inputLocs[varName] + i * inputSizes[varName];
             }
+          setPointerLocs();
           resetGrad();
           compute();
           (*batchFunction)(this, i, batchComputeSize);
