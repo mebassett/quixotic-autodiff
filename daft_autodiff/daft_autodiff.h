@@ -91,8 +91,6 @@ struct Operation {
     uint workingSize;
     uint resultSize;
     uint gradSize;
-    uint pointerSize;
-    uint gradPointerSize;
     const uint rows;
     const uint cols;
     const string name;
@@ -122,8 +120,6 @@ struct Function {
     uint gradSize;
     uint resultSize;
     uint workingSize;
-    uint pointerSize;
-    uint gradPointerSize;
     uint totalSize;
     uint batchSize;
     map<string, float*> memLocs;

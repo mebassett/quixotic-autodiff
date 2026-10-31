@@ -359,8 +359,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .workingSize = 0
                , .resultSize = rows
                , .gradSize = rows
-               , .pointerSize = 0
-               , .gradPointerSize = 0
                , .rows = rows
                , .cols = 1
                , .name{name} };
@@ -371,8 +369,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .workingSize = 0
                , .resultSize = rows*cols
                , .gradSize = rows*cols
-               , .pointerSize = 0
-               , .gradPointerSize = 0
                , .rows = rows
                , .cols = cols
                , .name{name} };
@@ -383,8 +379,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .workingSize = 0
                , .resultSize = rows*cols
                , .gradSize = rows*cols
-               , .pointerSize = 0
-               , .gradPointerSize = 0
                , .rows = rows
                , .cols = cols
                , .name{name} };
@@ -396,8 +390,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .workingSize = 0 
                , .resultSize = target1Rows*target2Cols
                , .gradSize = target1Rows*target1Cols + target1Cols*target2Cols
-               , .pointerSize = 3
-               , .gradPointerSize = 5
                , .rows = target1Rows
                , .cols = target2Cols
                , .name{name} 
@@ -416,8 +408,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 , .workingSize = rows*cols
                 , .resultSize = rows*cols
                 , .gradSize = rows*cols
-                , .pointerSize = 0
-                , .gradPointerSize = 0
                 , .rows=rows
                 , .cols=cols
                 , .name{name}
@@ -430,8 +420,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .workingSize = 0
                , .resultSize = 1
                , .gradSize = 2*rows
-               , .pointerSize = 3
-               , .gradPointerSize = 0
                , .rows = 1
                , .cols = 1
                , .name{name}
@@ -446,8 +434,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .workingSize = 0
                , .resultSize = rows*cols
                , .gradSize = rows*cols
-               , .pointerSize = 0
-               , .gradPointerSize = 0
                , .rows = rows
                , .cols = cols
                , .name{name}
@@ -461,8 +447,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .workingSize = 0
                , .resultSize = rows*cols
                , .gradSize = rows*cols
-               , .pointerSize = 0
-               , .gradPointerSize = 0
                , .rows = rows
                , .cols = cols
                , .name{name}
@@ -501,8 +485,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .workingSize = paddedInputSize + (unrKrnlRows * unrKrnlCols)
                , .resultSize = rows * cols
                , .gradSize = gradSize
-               , .pointerSize = 3
-               , .gradPointerSize = 5
                , .rows = rows
                , .cols = cols
                , .name{name}
@@ -533,8 +515,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 , .workingSize = 0
                 , .resultSize = rows * cols
                 , .gradSize = targetRows * targetCols
-                , .pointerSize = 0
-                , .gradPointerSize = 0
                 , .rows = rows
                 , .cols = cols
                 , .name{name}
@@ -560,8 +540,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                , .workingSize = 0
                , .resultSize = size // we assume the user set this correctly.
                , .gradSize = 0
-               , .pointerSize = targets.size()
-               , .gradPointerSize = targets.size()
                , .rows = size 
                , .cols = 1
                , .name{name}
@@ -582,7 +560,8 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
         }
 
         this->batchSize = _batchSize;
-        totalSize = 0; gradSize = 0; workingSize = 0; resultSize = 0; pointerSize = 0; gradPointerSize = 0;
+        totalSize = 0; gradSize = 0; workingSize = 0; resultSize = 0;
+        int pointerSize = 0;
         for(auto& op : ops){
             int batchSizeMultiplier = batchSize;
             if( op.opType == OperationType::WeightsMatrix ) 
@@ -590,8 +569,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
 
             if( op.opType == OperationType::Concat ) {
                 ConcatConfig opCnfg = get<ConcatConfig>(op.config);
-                if(opCnfg.targets.size() == 1)
-                    continue;
                 int targetResults = 0;
                 for(auto targetName:opCnfg.targets){ 
                     if(auto it = opsMap.find(targetName); it != opsMap.end()) {
@@ -602,12 +579,8 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 op.resultSize = targetResults;
                 op.gradSize = targetResults;
                 op.workingSize = 0;
-                pointerSize += op.pointerSize;
-                gradPointerSize += op.gradPointerSize;
-            }else {
-                pointerSize += op.pointerSize * batchSizeMultiplier;
-                gradPointerSize += op.gradPointerSize * batchSizeMultiplier;
-            } 
+                pointerSize += opCnfg.targets.size();
+            }
             totalSize += (op.workingSize + op.resultSize + op.gradSize) * batchSizeMultiplier;
             gradSize += op.gradSize * batchSizeMultiplier;
             workingSize += op.workingSize * batchSizeMultiplier;
@@ -615,10 +588,10 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             
         }
         cudaMalloc((void**)&d_value, totalSize * sizeof(float));
-        cudaMalloc((void**)&d_pointers, (gradPointerSize+pointerSize) * sizeof(float*));
         cudaMemset(d_value, 0, totalSize * sizeof(float));
+        cudaMalloc((void**)&d_pointers, pointerSize * sizeof(float*));
         
-        int idxGradSize = 0, idxWorkingSize = 0, idxResultSize = 0, idxPointerSize = 0, idxGradPointerSize = 0;
+        int idxGradSize = 0, idxWorkingSize = 0, idxResultSize = 0, idxPointerSize = 0;
         for(auto op:ops){
             int batchSizeMultiplier = batchSize;
             if( op.opType == OperationType::WeightsMatrix )
@@ -641,66 +614,11 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             idxResultSize += op.resultSize * batchSizeMultiplier;
             memLocs[op.name+"_working"] = d_value + gradSize + resultSize + idxWorkingSize;
             idxWorkingSize += op.workingSize * batchSizeMultiplier;
-
-            pointerLocs[op.name] = d_pointers + idxPointerSize;
-            pointerLocs[op.name+"_grad"] = d_pointers + pointerSize + idxGradPointerSize;
             if( op.opType == OperationType::Concat ) {
-              idxPointerSize +=op.pointerSize ;
-              idxGradPointerSize +=op.gradPointerSize ;
-            }else{
-              idxPointerSize +=op.pointerSize * batchSizeMultiplier;
-              idxGradPointerSize +=op.gradPointerSize * batchSizeMultiplier;
-            }
-        }
-        setPointerLocs();
-    }
-    void Function::setPointerLocs() {
+              ConcatConfig opCnfg = get<ConcatConfig>(op.config);
+              pointerLocs[op.name] = d_pointers + idxPointerSize;
+              idxPointerSize += opCnfg.targets.size();
 
-        for(auto op:ops){
-            switch(op.opType) {
-              case OperationType::MatrixProduct:{
-                BinaryMatrixConfig opCnfg = get<BinaryMatrixConfig>(op.config);
-                // setting up pointers for batch in forward pass (compute)
-                
-                float* d_matrix1 = memLocs[opCnfg.target1+"_result"];
-                float* d_matrix2 = memLocs[opCnfg.target2+"_result"];
-                float* d_result = memLocs[op.name+"_result"];
-                // if target1 is an Input it must not batch, all the pointers must point to the same matrixValue
-
-                // the colValue however should be batched, meaning we can pass it in directly all the time.
-                const auto targetOp1 = find_if(ops.begin(), ops.end()
-                            , [opCnfg](auto needle) { return needle.name == opCnfg.target1;});
-                const auto targetOp2 = find_if(ops.begin(), ops.end()
-                            , [opCnfg](auto needle) { return needle.name == opCnfg.target2;});
-                if(targetOp1 == ops.end() || targetOp2 == ops.end()) {
-                  cout << "compute(MatrixProduct) cannot find op " <<
-                          opCnfg.target1 << " or " << opCnfg.target2 << endl;
-
-                  exit(1);
-                  return;
-                }
-                float* As[batchSize];
-                float* Bs[batchSize];
-                float* Cs[batchSize];
-                for(int i=0;i<batchSize;i++){
-                  if(targetOp1->opType == OperationType::InputMatrix || targetOp1->opType == OperationType::WeightsMatrix){
-                    As[i] = d_matrix1;
-                  } else {
-                    As[i] = d_matrix1 + i * targetOp1->resultSize;
-                  }
-                  Bs[i] = d_matrix2 + i * targetOp2->resultSize;
-                  Cs[i] = d_result + i * op.resultSize;
-                }
-                
-                float** d_As = pointerLocs[op.name];
-                float** d_Bs = pointerLocs[op.name] + batchSize;
-                float** d_Cs = pointerLocs[op.name] + batchSize*2;;
-                
-                cudaMemcpy(d_As, As, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                cudaMemcpy(d_Bs, Bs, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                cudaMemcpy(d_Cs, Cs, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                
-              } break;
             }
 
         }
@@ -913,69 +831,50 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 float *matrixValue = memLocs[opConfig.target1+"_result"];
                 float *colGrad = matrixGrad + batchSize * opConfig.target1Rows * opConfig.target1Cols;
 
-                float *colValues[batchSize];
-                float *matrixValues[batchSize];
-                float *seeds[batchSize];
-                float *matrixGrads[batchSize];
-                float *colGrads[batchSize];
+                int matrixValueStride = targetOp1->rows * targetOp1->cols;
+                if(targetOp1->opType == OperationType::WeightsMatrix)
+                  matrixValueStride = 0;
 
-                for(int i=0;i<batchSize;i++) {
-                  if(targetOp1->opType == OperationType::WeightsMatrix)
-                    matrixValues[i] = matrixValue;
-                  else
-                    matrixValues[i] = matrixValue + i * targetOp1->rows * targetOp1->cols;
-                    
-                  colValues[i] = colValue + i * targetOp2->resultSize;
-                  seeds[i] = seed + i * opConfig.target1Rows;
-                  matrixGrads[i] = matrixGrad + i * opConfig.target1Rows * opConfig.target1Cols;
-                  colGrads[i] = colGrad + i * opConfig.target1Cols * opConfig.target2Cols;
-                }
-
-                float** d_matrixValues = pointerLocs[op.name+"_grad"];
-                float** d_colValues = pointerLocs[op.name+"_grad"] + batchSize;
-                float** d_seeds = pointerLocs[op.name+"_grad"] + batchSize*2; 
-                float** d_matrixGrads = pointerLocs[op.name+"_grad"] + batchSize*3;
-                float** d_colGrads = pointerLocs[op.name+"_grad"] + batchSize*4;
-
-                cudaMemcpy(d_matrixValues, matrixValues, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                cudaMemcpy(d_colValues, colValues, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                cudaMemcpy(d_seeds, seeds, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                cudaMemcpy(d_matrixGrads, matrixGrads, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                cudaMemcpy(d_colGrads, colGrads, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
 
                 float alpha = 1;
                 float beta = 0;
 
-                cublasErrCk( cublasSgemmBatched( *cublasH
+                cublasErrCk( cublasSgemmStridedBatched( *cublasH
                            , CUBLAS_OP_T
                            , CUBLAS_OP_N
                            , opConfig.target1Cols
                            , opConfig.target1Rows
                            , 1
                            , &alpha
-                           , d_colValues
+                           , colValue
                            , 1
-                           , d_seeds
+                           , targetOp2->resultSize // stride_colValues
+                           , seed
                            , 1
+                           , opConfig.target1Rows // stride_seeds
                            , &beta
-                           , d_matrixGrads
+                           , matrixGrad
                            , opConfig.target1Cols
+                           , opConfig.target1Rows * opConfig.target1Cols // stide_matrixGrads
                            , batchSize) ); 
                 
-                cublasErrCk( cublasSgemmBatched( *cublasH
+                cublasErrCk( cublasSgemmStridedBatched( *cublasH
                            , CUBLAS_OP_N
                            , CUBLAS_OP_T
                            , 1
                            , opConfig.target1Cols
                            , opConfig.target1Rows
                            , &alpha
-                           , d_seeds
+                           , seed
                            , 1
-                           , d_matrixValues
+                           , opConfig.target1Rows // stride_seeds
+                           , matrixValue
                            , opConfig.target1Cols
+                           , matrixValueStride
                            , &beta
-                           , d_colGrads
+                           , colGrad
                            , 1
+                           , opConfig.target1Cols * opConfig.target2Cols // stide_colGrad
                            , batchSize) );
 
                 computeGrad(opConfig.target1, matrixGrad);
@@ -1032,42 +931,28 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 float* unrolledKernel = memLocs[op.name+"_working"]
                                     + opCnfg.paddedInputSize * batchSize;
 
-                float* h_seed[batchSize];
-                float* h_paddedInput[batchSize];
-                float* h_matrixGrad[batchSize];
                 int matrixGradSize = opCnfg.unrKrnlCols * opCnfg.unrKrnlRows;
                 int paddedInputSize = opCnfg.unrKrnlCols;
                 int seedSize = opCnfg.unrKrnlRows;
 
-                for(int i =0;i<batchSize;i++) {
-                  h_seed[i] = seed + i * seedSize;
-                  h_paddedInput[i] = paddedInput + i * paddedInputSize;
-                  h_matrixGrad[i] = matrixGrad + i * matrixGradSize;
-                }
-                float** d_seed = pointerLocs[op.name+"_grad"];
-                float** d_paddedInput = pointerLocs[op.name+"_grad"] + batchSize;
-                float** d_matrixGrad = pointerLocs[op.name+"_grad"] + batchSize*2;
-                float** d_unrolledKernel = pointerLocs[op.name+"_grad"] + batchSize*3 ;
-                float** d_colGrad = pointerLocs[op.name+"_grad"] + batchSize*4;
-                
-                cudaMemcpy(d_seed, h_seed, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                cudaMemcpy(d_paddedInput, h_paddedInput, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                cudaMemcpy(d_matrixGrad, h_matrixGrad, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
 
-                cublasErrCk( cublasSgemmBatched( *cublasH
+                cublasErrCk( cublasSgemmStridedBatched( *cublasH
                             , CUBLAS_OP_T
                             , CUBLAS_OP_N
                             , opCnfg.unrKrnlCols
                             , opCnfg.unrKrnlRows
                             , 1
                             , &alpha
-                            , d_paddedInput
+                            , paddedInput
                             , 1
-                            , d_seed
+                            , paddedInputSize
+                            , seed
                             , 1
+                            , seedSize
                             , &beta
-                            , d_matrixGrad
+                            , matrixGrad
                             , opCnfg.unrKrnlCols
+                            , matrixGradSize //stride matrixGrad
                             , batchSize));
  
                 dim3 bd(32, 1, 32);
@@ -1091,30 +976,25 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
 
                 computeGrad(opCnfg.kernel, rolledKernelMatrixGrad);
 
-                float* h_unrolledKernel[batchSize];
-                float* h_colGrad[batchSize];
-                for(int i =0;i<batchSize;i++) {
-                  h_unrolledKernel[i] = unrolledKernel;
-                  h_colGrad[i] = colGrad + i * opCnfg.unrKrnlCols;
-                }
-                cudaMemcpy(d_unrolledKernel, h_unrolledKernel, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                cudaMemcpy(d_colGrad, h_colGrad, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
 
                 cublasErrCk(
-                  cublasSgemmBatched( *cublasH
+                  cublasSgemmStridedBatched( *cublasH
                       , CUBLAS_OP_N
                       , CUBLAS_OP_T
                       , 1
                       , opCnfg.unrKrnlCols
                       , opCnfg.unrKrnlRows
                       , &alpha
-                      , d_seed
+                      , seed
                       , 1
-                      , d_unrolledKernel
+                      , seedSize
+                      , unrolledKernel
                       , opCnfg.unrKrnlCols
+                      , 0 //. stride unrolledKernel
                       , &beta
-                      , d_colGrad
+                      , colGrad
                       , 1
+                      , opCnfg.unrKrnlCols // stride colGrad
                       , batchSize)
                 );
 
@@ -1352,35 +1232,20 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                     float alpha = 1;
                     float beta = 0;
 
-                    float* v1Ptrs[batchSize];
-                    float* v2Ptrs[batchSize];
-                    float* resultPtrs[batchSize];
-
-                    for(int i = 0; i < batchSize; i++) {
-                        v1Ptrs[i] = d_v1 + i * opConfig.targetRows;
-                        v2Ptrs[i] = d_v2 + i * opConfig.targetRows;
-                        resultPtrs[i] = d_result + i * 1; 
-                    }
-
-                    float** d_v1Ptrs = pointerLocs[op.name];
-                    float** d_v2Ptrs = pointerLocs[op.name] + batchSize;
-                    float** d_resultPtrs = pointerLocs[op.name] + batchSize*2;
-
-                    cudaMemcpy(d_v1Ptrs, v1Ptrs, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                    cudaMemcpy(d_v2Ptrs, v2Ptrs, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                    cudaMemcpy(d_resultPtrs, resultPtrs, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-
-                    cublasErrCk( cublasSgemvBatched( *cublasH
+                    cublasErrCk( cublasSgemvStridedBatched( *cublasH
                                        , CUBLAS_OP_N
                                        , 1
                                        , opConfig.targetRows
                                        , &alpha
-                                       , d_v1Ptrs
+                                       , d_v1
                                        , 1
-                                       , d_v2Ptrs
+                                       , opConfig.targetRows
+                                       , d_v2
                                        , 1
+                                       , opConfig.targetRows
                                        , &beta
-                                       , d_resultPtrs
+                                       , d_result
+                                       , 1
                                        , 1
                                        , batchSize) );
 
@@ -1418,36 +1283,21 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                     float beta = 0;
                     float* output = memLocs[op.name+"_result"];
 
-                    float* As[batchSize];
-                    float* xs[batchSize];
-                    float* ys[batchSize];
-
-                    for(int i=0;i<batchSize;i++){
-                      xs[i] = paddedInput + i * opCnfg.paddedInputSize;
-                      As[i] = unrolledKernel;
-                      ys[i] = output + i * op.resultSize;
-                    }
-                    
-                    float** d_As = pointerLocs[op.name];
-                    float** d_xs = pointerLocs[op.name] + batchSize;
-                    float** d_ys = pointerLocs[op.name] + batchSize*2;
-                    
-                    cudaMemcpy(d_As, As, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                    cudaMemcpy(d_xs, xs, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-                    cudaMemcpy(d_ys, ys, batchSize * sizeof(float*), cudaMemcpyHostToDevice);
-
-                    cublasErrCk( cublasSgemvBatched( *cublasH
+                    cublasErrCk( cublasSgemvStridedBatched( *cublasH
                                 , CUBLAS_OP_T
                                 , opCnfg.unrKrnlCols
                                 , opCnfg.unrKrnlRows
                                 , &alpha
-                                , d_As
+                                , unrolledKernel // As
                                 , opCnfg.unrKrnlCols
-                                , d_xs
+                                , 0 // stride A
+                                , paddedInput // x
                                 , 1
+                                , opCnfg.paddedInputSize // stride x
                                 , &beta
-                                , d_ys
+                                , output
                                 , 1
+                                , op.resultSize
                                 , batchSize ) );
 
                 break;}
@@ -1542,7 +1392,6 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             for (auto const& [varName, data] : inputs) {
                 memLocs[varName + "_result"] = inputLocs[varName] + i * inputSizes[varName];
             }
-          setPointerLocs();
           resetGrad();
           compute();
           (*batchFunction)(this, i, batchComputeSize);
