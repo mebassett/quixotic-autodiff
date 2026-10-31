@@ -1273,25 +1273,35 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                       exit(1);
                       return;
                     }
-                    float** d_As = pointerLocs[op.name];
-                    float** d_Bs = pointerLocs[op.name] + batchSize;
-                    float** d_Cs = pointerLocs[op.name] + batchSize*2;;
+
+                    int strideA = targetOp1->resultSize;
+
+                    if(targetOp1->opType == OperationType::InputMatrix || targetOp1->opType == OperationType::WeightsMatrix){
+                      strideA = 0;
+                    }
+
+                    float* d_A = memLocs[opConfig.target1+"_result"];
+                    float* d_B = memLocs[opConfig.target2+"_result"];
+                    float* d_C = memLocs[op.name+"_result"];
 
 
-                    cublasErrCk( cublasSgemmBatched( *cublasH
+                    cublasErrCk( cublasSgemmStridedBatched( *cublasH
                                , CUBLAS_OP_N
                                , CUBLAS_OP_N
                                , opConfig.target2Cols
                                , opConfig.target1Rows
                                , opConfig.target1Cols
                                , &alpha
-                               , d_Bs
+                               , d_B
                                , opConfig.target2Cols
-                               , d_As
+                               , targetOp2->resultSize // strideB
+                               , d_A
                                , opConfig.target1Cols
+                               , strideA
                                , &beta
-                               , d_Cs
+                               , d_C
                                , opConfig.target2Cols
+                               , op.resultSize // striceC
                                , batchSize) ) 
 
 
