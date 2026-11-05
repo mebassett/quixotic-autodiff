@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 #include <cassert>
 #include <iostream>
+#include <stdexcept>
 #include <vector>
 
 using namespace std;
@@ -641,8 +642,10 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
     }
 
     void Function::setValue(string name, const vector<vector<float>>& values) {
-        const auto op = find_if(ops.begin(), ops.end(), [name](auto needle) { return needle.name == name;});
-        if(op == ops.end()) {
+        Operation* op;
+        try {
+          op = opsMap.at(name);
+        } catch (const out_of_range&) {
           cout << "setValue cannot find op " << name << endl;
           exit(1);
           return;
@@ -675,13 +678,14 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
         float beta = -effectiveLR / batchSize;
         //float beta = -1 * learningRate / batchSize;
         Operation *op;
-
-        for(auto needle : ops){
-            if(needle.name == name) {
-                op = &needle;
-                break;
-            }
+        try {
+          op = opsMap.at(name);
+        } catch(const out_of_range&){
+          cout << "gradDescent: can't find op: " << name;
+          exit(1);
+          return;
         }
+
         if(op->opType != OperationType::WeightsMatrix) return;
 
         float* result  = memLocs[name+"_result"];
@@ -696,8 +700,10 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
     }
 
     void Function::getValue(string name, vector<vector<float>>* results) {
-        const auto op = find_if(ops.begin(), ops.end(), [name](auto needle) { return needle.name == name;});
-        if(op == ops.end()) {
+        Operation* op;
+        try {
+          op = opsMap.at(name);
+        } catch (const out_of_range&) {
           cout << "getValue cannot find op " << name << endl;
           exit(1);
           return;
@@ -715,11 +721,12 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
 
     void Function::getGrad(string name, vector<vector<float>>* results) {
         Operation *op;
-        for(auto needle : ops){
-            if(needle.name == name) {
-                op = &needle;
-                break;
-            }
+        try {
+          op = opsMap.at(name);
+        } catch(const out_of_range&){
+          cout << "getGrad: can't find op: " << name;
+          exit(1);
+          return;
         }
         float* resultsTemp = new float [ batchSize * op->gradSize];
         float* d_value = memLocs[name+"_grad"];
@@ -737,8 +744,10 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
     }
 
     void Function::computeGrad(string name) {
-        const auto op = find_if(ops.begin(), ops.end(), [name](auto needle) { return needle.name == name;});
-        if(op == ops.end()) {
+        Operation* op;
+        try {
+          op = opsMap.at(name);
+        } catch (const out_of_range&) {
           cout << "computeGrad cannot find op " << name << endl;
           exit(1);
           return;
@@ -763,14 +772,16 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
     }
 
     void Function::computeGrad(string name, float* seed){
-        const auto it = find_if(ops.begin(), ops.end(), [name](auto needle) { return needle.name == name;});
-        if(it == ops.end()) {
+        Operation* it;
+        try {
+          it = opsMap.at(name);
+        } catch (const out_of_range&) {
           cout << "computeGrad* cannot find op " << name << endl;
           exit(1);
           return;
         }
 
-        Operation op = *it;
+        Operation& op = *it;
         switch(op.opType) {
             case OperationType::InnerProduct: {
                 BinaryOpConfig opConfig = get<BinaryOpConfig>(op.config);
@@ -814,11 +825,12 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             case OperationType::MatrixProduct: {
                 BinaryMatrixConfig opConfig = get<BinaryMatrixConfig>(op.config);
 
-                const auto targetOp1 = find_if(ops.begin(), ops.end()
-                            , [opConfig](auto needle) { return needle.name == opConfig.target1;});
-                const auto targetOp2 = find_if(ops.begin(), ops.end()
-                            , [opConfig](auto needle) { return needle.name == opConfig.target2;});
-                if(targetOp1 == ops.end() || targetOp2 == ops.end()) {
+                Operation* targetOp1;
+                Operation* targetOp2;
+                try {
+                  targetOp1 = opsMap.at(opConfig.target1);
+                  targetOp2 = opsMap.at(opConfig.target2);
+                } catch (const out_of_range&) {
                   cout << "compute(MatrixProduct) cannot find op " <<
                           opConfig.target1 << " or " << opConfig.target2 << endl;
 
@@ -1036,13 +1048,12 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 float* d_newSeed = memLocs[op.name+"_grad"];
 
                 for (int i=0; i < d_size; i++) {
-                    const auto targetOp = 
-                        find_if( ops.begin()
-                               , ops.end()
-                               , [opCnfg,i](auto needle) {
-                                       return needle.name == opCnfg.targets[i];
-                                 });
-                    if(targetOp == ops.end()) break;
+                    Operation* targetOp;
+                    try {
+                        targetOp = opsMap.at(opCnfg.targets[i]);
+                    } catch (const out_of_range&) {
+                        break;
+                    }
                     targetSizes[i] = targetOp->resultSize;
                 }
 
@@ -1058,13 +1069,12 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
 
 
                 for (auto target : opCnfg.targets) {
-                  const auto targetOp = 
-                      find_if( ops.begin()
-                             , ops.end()
-                             , [target](auto needle) {
-                                     return needle.name == target;
-                               });
-                  if(targetOp == ops.end()) break;
+                  Operation* targetOp;
+                  try {
+                    targetOp = opsMap.at(target);
+                  } catch (const out_of_range&) {
+                    break;
+                  }
                   computeGrad(target, d_newSeed + memIndex);
                   memIndex += targetOp->rows * targetOp->cols * batchSize;
                 }
@@ -1108,9 +1118,10 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                     int targetSizes[32];
                     int d_size = opConfig.targets.size();
                     for(int i=0;i<opConfig.targets.size();i++) {
-                        const auto targetOp = find_if(ops.begin(), ops.end()
-                                    , [opConfig,i](auto needle) { return needle.name == opConfig.targets[i];});
-                        if (targetOp == ops.end()) {
+                        Operation* targetOp;
+                        try {
+                            targetOp = opsMap.at(opConfig.targets[i]);
+                        } catch (const out_of_range&) {
                             cout << "compute(Concat) cannot find op " <<
                               opConfig.targets[i];
 
@@ -1142,11 +1153,12 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                     // if target1 is an Input it must not batch, all the pointers must point to the same matrixValue
 
                     // the colValue however should be batched, meaning we can pass it in directly all the time.
-                    const auto targetOp1 = find_if(ops.begin(), ops.end()
-                                , [opConfig](auto needle) { return needle.name == opConfig.target1;});
-                    const auto targetOp2 = find_if(ops.begin(), ops.end()
-                                , [opConfig](auto needle) { return needle.name == opConfig.target2;});
-                    if(targetOp1 == ops.end() || targetOp2 == ops.end()) {
+                    Operation* targetOp1;
+                    Operation* targetOp2;
+                    try {
+                      targetOp1 = opsMap.at(opConfig.target1);
+                      targetOp2 = opsMap.at(opConfig.target2);
+                    } catch (const out_of_range&) {
                       cout << "compute(MatrixProduct) cannot find op " <<
                               opConfig.target1 << " or " << opConfig.target2 << endl;
 
@@ -1333,14 +1345,15 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
         int batchComputeSize = 0;
         int totalSize = 0;
         for(const auto target : targets) {
-          const auto targetOp = find_if(ops.begin(), ops.end(), [target](auto needle) { return needle.name == target;});
-          if(targetOp != ops.end()) {
-            targetOps[target] = &(*targetOp);
-          } else {
+          Operation* targetOp;
+          try {
+            targetOp = opsMap.at(target);
+          } catch (const out_of_range&) {
             cout << "batchCompute cannot find op " << target << endl;
             exit(1);
             return;
           }
+          targetOps[target] = targetOp;
 
         }
 
