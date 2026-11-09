@@ -113,6 +113,12 @@ struct Operation {
     static Operation concat(string name, const vector<string>& targets, uint size);
 };
 
+struct MemoryLocation {
+  float* working;
+  float* grad;
+  float* result;
+};
+
 
 struct Function {
     vector<Operation> ops;
@@ -122,7 +128,10 @@ struct Function {
     uint workingSize;
     uint totalSize;
     uint batchSize;
-    map<string, float*> memLocs;
+    map<string, MemoryLocation> memLocs;
+    float* getResult(string);
+    float* getGrad(string);
+    float* getWorkingMemory(string);
     map<string, float**> pointerLocs;
     float* d_value;
     float** d_pointers;

@@ -1,5 +1,4 @@
 #include "daft_autodiff.h"
-#include <algorithm>
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 #include <cassert>
@@ -555,6 +554,39 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
         batchSize = 1; 
     }
 
+    float* Function::getResult(string opName){
+      try{ 
+        const MemoryLocation m = memLocs.at(opName);
+        return m.result;
+      } catch(out_of_range&){
+          cout << "Function::getResult cannot find op: " << opName << endl;
+          exit(1);
+          return nullptr;
+      }
+    }
+
+    float* Function::getGrad(string opName){
+      try{ 
+        const MemoryLocation m = memLocs.at(opName);
+        return m.grad;
+      } catch(out_of_range&){
+          cout << "Function::getGrad cannot find op: " << opName << endl;
+          exit(1);
+          return nullptr;
+      }
+    }
+
+    float* Function::getWorkingMemory(string opName){
+      try{ 
+        const MemoryLocation m = memLocs.at(opName);
+        return m.working;
+      } catch(out_of_range&){
+          cout << "Function::getWorkingMemory cannot find op: " << opName << endl;
+          exit(1);
+          return nullptr;
+      }
+    }
+
     void Function::compile(uint _batchSize) {
         for(auto& op: ops) {
             opsMap[op.name] = &op;
@@ -609,11 +641,13 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 // memLocs[op.name+"_result"] = memLocs[opCnfg.targets[0]+"_result"];
                 //
             //}
-            memLocs[op.name+"_grad"] = d_value + idxGradSize;
+            float* currentGrad = d_value + idxGradSize;
             idxGradSize += op.gradSize * batchSizeMultiplier;
-            memLocs[op.name+"_result"] = d_value + gradSize + idxResultSize;
+            float* currentResult = d_value + gradSize + idxResultSize;
             idxResultSize += op.resultSize * batchSizeMultiplier;
-            memLocs[op.name+"_working"] = d_value + gradSize + resultSize + idxWorkingSize;
+            float* currentWorking  = d_value + gradSize + resultSize + idxWorkingSize;
+            memLocs[op.name] = { currentWorking, currentGrad, currentResult};
+
             idxWorkingSize += op.workingSize * batchSizeMultiplier;
             if( op.opType == OperationType::Concat ) {
               ConcatConfig opCnfg = get<ConcatConfig>(op.config);
@@ -669,7 +703,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
         for(const auto v : values) {
             total.insert(total.end(), v.begin(), v.end());
         }
-        cudaMemcpy(memLocs[name+"_result"], &(total[0]), sizeof(float)*total.size(), cudaMemcpyHostToDevice);
+        cudaMemcpy(getResult(name), &(total[0]), sizeof(float)*total.size(), cudaMemcpyHostToDevice);
     }
 
     void Function::gradDescent(string name, float learningRate) {
@@ -688,8 +722,8 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
 
         if(op->opType != OperationType::WeightsMatrix) return;
 
-        float* result  = memLocs[name+"_result"];
-        float* grad  = memLocs[name+"_grad"];
+        float* result  = getResult(name);
+        float* grad  = getGrad(name);
         cublasErrCk ( cublasSgeam( *cublasH
                  , CUBLAS_OP_N
                  , CUBLAS_OP_N
@@ -709,7 +743,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
           return;
         }
         float* resultsTemp = new float [ batchSize * op->rows * op-> cols ];
-        float* d_value = memLocs[name+"_result"];
+        float* d_value = getResult(name);
 
         cudaMemcpy(resultsTemp, d_value, sizeof(float)*batchSize*op->rows*op->cols,cudaMemcpyDeviceToHost);
 
@@ -729,7 +763,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
           return;
         }
         float* resultsTemp = new float [ batchSize * op->gradSize];
-        float* d_value = memLocs[name+"_grad"];
+        float* d_value = getGrad(name);
         int batchSizeOverride = batchSize;
         if(op->opType == OperationType::WeightsMatrix)
           batchSizeOverride = 1;
@@ -785,11 +819,11 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
         switch(op.opType) {
             case OperationType::InnerProduct: {
                 BinaryOpConfig opConfig = get<BinaryOpConfig>(op.config);
-                float* col1 = memLocs[opConfig.target1+"_result"];
-                float* col2 = memLocs[opConfig.target2+"_result"];
+                float* col1 = getResult(opConfig.target1);//memLocs[opConfig.target1+"_result"];
+                float* col2 = getResult(opConfig.target2);//memLocs[opConfig.target2+"_result"];
 
-                float* vec1 = memLocs[name+"_grad"];
-                float* vec2 = memLocs[name+"_grad"] + opConfig.targetRows * batchSize;
+                float* vec1 = getGrad(name);//memLocs[name+"_grad"];
+                float* vec2 = vec1 + opConfig.targetRows * batchSize;
                 
                 cublasErrCk( cublasSetPointerMode( *cublasH, CUBLAS_POINTER_MODE_DEVICE) );
 
@@ -806,18 +840,18 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             } break;
             case OperationType::InputColumn: {
                 float alpha = 1;
-                float *grad = memLocs[name+"_grad"];
+                float *grad = getGrad(name);//memLocs[name+"_grad"];
                 cublasErrCk( cublasSaxpy(*cublasH, op.gradSize*batchSize, &alpha, seed, 1, grad, 1) );
 
             } break;
             case OperationType::InputMatrix: {
                 float alpha = 1;
-                float *grad = memLocs[name+"_grad"];
+                float *grad = getGrad(name);//memLocs[name+"_grad"];
                 cublasErrCk( cublasSaxpy(*cublasH, op.gradSize*batchSize, &alpha, seed, 1, grad, 1) );
             } break;
             case OperationType::WeightsMatrix: {
                 float alpha = 1;
-                float *grad = memLocs[name+"_grad"];
+                float *grad = getGrad(name);//memLocs[name+"_grad"];
                 // we don't batch weights, because that's silly.  so we are summing all these up
                 for(int i = 0; i <batchSize; i++)
                   cublasErrCk( cublasSaxpy(*cublasH, op.gradSize, &alpha, seed+i*op.gradSize, 1, grad, 1) );
@@ -838,9 +872,9 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                   return;
                 }
 
-                float *colValue = memLocs[opConfig.target2+"_result"];
-                float *matrixGrad = memLocs[op.name+"_grad"];
-                float *matrixValue = memLocs[opConfig.target1+"_result"];
+                float *colValue = getResult(opConfig.target2);//memLocs[opConfig.target2+"_result"];
+                float *matrixGrad = getGrad(name);//memLocs[op.name+"_grad"];
+                float *matrixValue = getResult(opConfig.target1);//memLocs[opConfig.target1+"_result"];
                 float *colGrad = matrixGrad + batchSize * opConfig.target1Rows * opConfig.target1Cols;
 
                 int matrixValueStride = targetOp1->rows * targetOp1->cols;
@@ -894,8 +928,8 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             } break;
             case OperationType::Scalar: {
                 ScalarConfig opConfig = get<ScalarConfig>(op.config);
-                float *result = memLocs[op.name+"_result"];
-                float *grad = memLocs[name+"_grad"];
+                float *result = getResult(name);//memLocs[op.name+"_result"];
+                float *grad = getGrad(name);//memLocs[name+"_grad"];
 
                 cublasErrCk( cublasScopy(*cublasH, op.cols * op.rows * batchSize, seed, 1, grad, 1) );
                 cublasErrCk( cublasSscal(*cublasH, op.cols * op.rows * batchSize, &(opConfig.scale), grad, 1) );
@@ -904,7 +938,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             } break;
             case OperationType::Add: {
                 BinaryOpConfig opConfig = get<BinaryOpConfig>(op.config);
-                float* copySeed = memLocs[op.name+"_grad"];
+                float* copySeed = getGrad(name);//memLocs[op.name+"_grad"];
 
                 cudaMemcpy(copySeed, seed, batchSize * op.rows * op.cols * sizeof(float), cudaMemcpyDeviceToDevice);
                 computeGrad(opConfig.target1, seed);
@@ -912,8 +946,8 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             } break;
             case OperationType::LeakyReLU: {
                 BasicConfig opConfig = get<BasicConfig>(op.config);
-                float* newSeed = memLocs[op.name+"_working"];
-                float *grad = memLocs[name+"_grad"];
+                float* newSeed = getWorkingMemory(name);//memLocs[op.name+"_working"];
+                float *grad = getGrad(name);//memLocs[name+"_grad"];
                 dim3 bd(16, 16, 4);
                 dim3 gd(ceil(op.cols / 16.0), ceil(op.rows / 16.0), ceil(batchSize / 4.0));
 
@@ -934,13 +968,13 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 int startCol = startMatrix
                     + (opCnfg.unrKrnlRows * opCnfg.unrKrnlCols )*batchSize;
 
-                float* rolledKernelMatrixGrad = memLocs[op.name+"_grad"];
-                float* inputGrad = memLocs[op.name+"_grad"] + startInput;
-                float* matrixGrad = memLocs[op.name+"_grad"] + startMatrix; 
-                float* colGrad = memLocs[op.name+"_grad"] + startCol; 
+                float* rolledKernelMatrixGrad = getGrad(name);//memLocs[op.name+"_grad"];
+                float* inputGrad = getGrad(name) + startInput;
+                float* matrixGrad = getGrad(name) + startMatrix; 
+                float* colGrad = getGrad(name) + startCol; 
 
-                float* paddedInput = memLocs[op.name+"_working"];
-                float* unrolledKernel = memLocs[op.name+"_working"]
+                float* paddedInput = getWorkingMemory(name);//memLocs[op.name+"_working"];
+                float* unrolledKernel = getWorkingMemory(name)//memLocs[op.name+"_working"]
                                     + opCnfg.paddedInputSize * batchSize;
 
                 int matrixGradSize = opCnfg.unrKrnlCols * opCnfg.unrKrnlRows;
@@ -1027,9 +1061,9 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
             }break;
             case OperationType::MaxPool: {
                 MaxPoolConfig opConfig = get<MaxPoolConfig>(op.config);
-                float* targetValue = memLocs[opConfig.target+"_result"];
-                float* result = memLocs[op.name+"_result"];
-                float* grad = memLocs[op.name+"_grad"];
+                float* targetValue = getResult(opConfig.target);//memLocs[opConfig.target+"_result"];
+                float* result = getResult(name);//memLocs[op.name+"_result"];
+                float* grad = getGrad(name);//memLocs[op.name+"_grad"];
 
                 dim3 bd(16, 16, 4);
                 dim3 gd(ceil(op.cols / 16.0), ceil(op.rows / 16.0), ceil(batchSize / 4.0));
@@ -1045,7 +1079,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 int targetSizes[32];
                 int d_size = opCnfg.targets.size();
                 int memIndex = 0;
-                float* d_newSeed = memLocs[op.name+"_grad"];
+                float* d_newSeed = getGrad(name);//memLocs[op.name+"_grad"];
 
                 for (int i=0; i < d_size; i++) {
                     Operation* targetOp;
@@ -1128,7 +1162,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                             exit(1);
                             return;
                         }
-                        hostTargets.push_back(memLocs[opConfig.targets[i]+"_result"]);
+                        hostTargets.push_back(getResult(opConfig.targets[i]));//memLocs[opConfig.targets[i]+"_result"]);
                         targetSizes[i] = targetOp->resultSize;
                     }
 
@@ -1139,7 +1173,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                     dim3 gd(ceil((float)targetSizes[0] / 16.0), ceil((float)d_size / 16.0), ceil(batchSize / 4.0));
 
 
-                    doConcatInterleave<<<gd, bd>>>(d_targets, d_size, memLocs[op.name+"_result"], opConfig.size, batchSize);
+                    doConcatInterleave<<<gd, bd>>>(d_targets, d_size, getResult(op.name), opConfig.size, batchSize);
                     cudaErrCk( cudaPeekAtLastError() );
 
 
@@ -1172,9 +1206,9 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                       strideA = 0;
                     }
 
-                    float* d_A = memLocs[opConfig.target1+"_result"];
-                    float* d_B = memLocs[opConfig.target2+"_result"];
-                    float* d_C = memLocs[op.name+"_result"];
+                    float* d_A = getResult(opConfig.target1);//memLocs[opConfig.target1+"_result"];
+                    float* d_B = getResult(opConfig.target2);//memLocs[opConfig.target2+"_result"];
+                    float* d_C = getResult(op.name);//memLocs[op.name+"_result"];
 
 
                     cublasErrCk( cublasSgemmStridedBatched( *cublasH
@@ -1205,9 +1239,9 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                     // the compile can't catch...
                             
                     BasicConfig opConfig = get<BasicConfig>(op.config);
-                    float* d_col = memLocs[opConfig.target+"_result"];
-                    float* d_grad = memLocs[op.name+"_grad"];
-                    float* d_result = memLocs[op.name+"_result"];
+                    float* d_col = getResult(opConfig.target);//memLocs[opConfig.target+"_result"];
+                    float* d_grad = getGrad(op.name);//memLocs[op.name+"_grad"];
+                    float* d_result = getResult(op.name);//memLocs[op.name+"_result"];
 
                     dim3 bd(16, 16, 4);
                     dim3 gd(ceil(op.cols / 16.0), ceil(op.rows / 16.0), ceil(batchSize / 4.0));
@@ -1220,9 +1254,9 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 break;}
                 case OperationType::Add:{
                     BinaryOpConfig opConfig = get<BinaryOpConfig>(op.config);
-                    float* d_v1 = memLocs[opConfig.target1+"_result"];
-                    float* d_v2 = memLocs[opConfig.target2+"_result"];
-                    float* d_result = memLocs[op.name+"_result"];
+                    float* d_v1 = getResult(opConfig.target1);//memLocs[opConfig.target1+"_result"];
+                    float* d_v2 = getResult(opConfig.target2);//memLocs[opConfig.target2+"_result"];
+                    float* d_result = getResult(op.name);//memLocs[op.name+"_result"];
                     float alpha = 1.0;
                     
                     cublasErrCk( cublasScopy(*cublasH, op.rows * op.cols * batchSize, d_v1, 1, d_result, 1) );
@@ -1230,16 +1264,16 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 break;}
                 case OperationType::Scalar:{
                     ScalarConfig opConfig = get<ScalarConfig>(op.config);
-                    float* d_target = memLocs[opConfig.target+"_result"];
-                    float* d_result = memLocs[op.name+"_result"];
+                    float* d_target = getResult(opConfig.target);//memLocs[opConfig.target+"_result"];
+                    float* d_result = getResult(op.name);//memLocs[op.name+"_result"];
                     cublasErrCk( cublasScopy(*cublasH, op.rows * op.cols * batchSize, d_target, 1, d_result, 1) );
                     cublasErrCk( cublasSscal(*cublasH, op.rows * op.cols * batchSize, &(opConfig.scale), d_result, 1) );
                 break;}
                 case OperationType::InnerProduct:{
                     BinaryOpConfig opConfig = get<BinaryOpConfig>(op.config);
-                    float* d_v1 = memLocs[opConfig.target1+"_result"];
-                    float* d_v2 = memLocs[opConfig.target2+"_result"];
-                    float* d_result = memLocs[op.name+"_result"];
+                    float* d_v1 = getResult(opConfig.target1);//memLocs[opConfig.target1+"_result"];
+                    float* d_v2 = getResult(opConfig.target2);//memLocs[opConfig.target2+"_result"];
+                    float* d_result = getResult(op.name);//memLocs[op.name+"_result"];
 
                     float alpha = 1;
                     float beta = 0;
@@ -1266,8 +1300,8 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 case OperationType::Convolution:{
                     // pad the input, which means a copy to wocrking, which is slow
                     ConvolutionConfig opCnfg = get<ConvolutionConfig>(op.config);
-                    float* input = memLocs[opCnfg.multiplicand+"_result"];
-                    float* paddedInput = memLocs[op.name+"_working"];
+                    float* input = getResult(opCnfg.multiplicand);//memLocs[opCnfg.multiplicand+"_result"];
+                    float* paddedInput = getWorkingMemory(op.name);//memLocs[op.name+"_working"];
                     convolutionPadInput( opCnfg.multiplicandRows
                                        , opCnfg.multiplicandCols
                                        , opCnfg.rowPadding
@@ -1277,8 +1311,9 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                                        , batchSize);
 
                     // unroll the kernel..another slow copy to working.
-                    float* kernel = memLocs[opCnfg.kernel+"_result"];
-                    float* unrolledKernel = memLocs[op.name+"_working"] + opCnfg.paddedInputSize * batchSize;
+                    float* kernel = getResult(opCnfg.kernel);//memLocs[opCnfg.kernel+"_result"];
+                    float* unrolledKernel = getWorkingMemory(op.name) //memLocs[op.name+"_working"] 
+                                            + opCnfg.paddedInputSize * batchSize;
                     convolutionUnrollKernel( opCnfg.unrKrnlRows
                             , opCnfg.unrKrnlCols
                             , opCnfg.kernelRows
@@ -1293,7 +1328,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                     // do a matrix multiplication, storing it in the result
                     float alpha = 1;
                     float beta = 0;
-                    float* output = memLocs[op.name+"_result"];
+                    float* output = getResult(op.name);//memLocs[op.name+"_result"];
 
                     cublasErrCk( cublasSgemvStridedBatched( *cublasH
                                 , CUBLAS_OP_T
@@ -1315,8 +1350,8 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                 break;}
                 case OperationType::MaxPool: {
                     MaxPoolConfig opConfig = get<MaxPoolConfig>(op.config);
-                    float* d_target = memLocs[opConfig.target+"_result"];
-                    float* d_result = memLocs[op.name+"_result"];
+                    float* d_target = getResult(opConfig.target);//memLocs[opConfig.target+"_result"];
+                    float* d_result = getResult(op.name);//memLocs[op.name+"_result"];
 
                     dim3 bd(16, 16, 4);
                     dim3 gd(ceil(op.cols / 16.0), ceil(op.rows / 16.0), ceil(batchSize / 4.0));
@@ -1338,7 +1373,7 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
                                , void (*batchFunction)(Function*, int, int )) {
         // save the original memLocs since we move these aroudn a lot. restore
         // them at the end.
-        map<string, float*> originalMemLocs = memLocs;
+        map<string, MemoryLocation> originalMemLocs = memLocs;
 
         map<string, Operation*> targetOps;
         int totalTargetSize = 0;
@@ -1400,10 +1435,14 @@ inline void cublasAssert(cublasStatus_t err, const char *file, int line) {
 
         for(int i = 0; i < batchComputeSize; i = i + batchSize ) {
             for( const auto target: targets) {
-                memLocs[target + "_result"] = inputLocs[target] + i * targetOps[target]->resultSize ;
+                MemoryLocation m = memLocs[target];
+                memLocs[target] = { m.working, m.grad, inputLocs[target] + i * targetOps[target]->resultSize};
+                 // inputLocs[target] + i * targetOps[target]->resultSize ;
             }
             for (auto const& [varName, data] : inputs) {
-                memLocs[varName + "_result"] = inputLocs[varName] + i * inputSizes[varName];
+                MemoryLocation m = memLocs[varName];
+                memLocs[varName] = { m.working, m.grad, inputLocs[varName] + i * inputSizes[varName] };
+                 //inputLocs[varName] + i * inputSizes[varName];
             }
           resetGrad();
           compute();
