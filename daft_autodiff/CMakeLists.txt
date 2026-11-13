@@ -7,5 +7,5 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(CUDAToolkit REQUIRED)
 
-add_library(daft_autodiff daft_autodiff.cu)
+add_library(daft_autodiff daft_autodiff.cu daft_kernels.cu)
 target_link_libraries(daft_autodiff PUBLIC cublas )
