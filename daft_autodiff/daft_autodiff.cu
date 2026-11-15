@@ -1,4 +1,5 @@
 #include "daft_autodiff.h"
+#include "daft_innerproduct.h"
 #include "daft_kernels.cuh"
 #include "daft_error.h"
 #include <cublas_v2.h>
@@ -152,19 +153,6 @@ void noOpBatchCompute(Function* f, int idx, int length) {}
                 };
     }
 
-    Operation Operation::innerProduct(string name, string target1, string target2, uint rows) {
-        return { .opType=OperationType::InnerProduct
-               , .workingSize = 0
-               , .resultSize = 1
-               , .gradSize = 2*rows
-               , .rows = 1
-               , .cols = 1
-               , .name{name}
-               , .config{ (BinaryOpConfig) {.target1{target1}, .target2{target2}, 
-                                            .targetRows = rows, .targetCols = 1}}
-        };
-
-    }
 
     Operation Operation::add(string name, string target1, string target2, uint rows, uint cols) {
         return { .opType=OperationType::Add
@@ -555,25 +543,9 @@ void noOpBatchCompute(Function* f, int idx, int length) {}
         Operation& op = *it;
         switch(op.opType) {
             case OperationType::InnerProduct: {
-                BinaryOpConfig opConfig = get<BinaryOpConfig>(op.config);
-                float* col1 = getResult(opConfig.target1);//memLocs[opConfig.target1+"_result"];
-                float* col2 = getResult(opConfig.target2);//memLocs[opConfig.target2+"_result"];
-
-                float* vec1 = getGrad(name);//memLocs[name+"_grad"];
-                float* vec2 = vec1 + opConfig.targetRows * batchSize;
-                
-                cublasErrCk( cublasSetPointerMode( *cublasH, CUBLAS_POINTER_MODE_DEVICE) );
-
-                cublasErrCk( cublasScopy(*cublasH, opConfig.targetRows * batchSize, col1, 1, vec1, 1) );
-                cublasErrCk( cublasSscal(*cublasH, opConfig.targetRows * batchSize, seed, vec1, 1) );
-                
-                cublasErrCk( cublasScopy(*cublasH, opConfig.targetRows * batchSize, col2, 1, vec2, 1) );
-                cublasErrCk( cublasSscal(*cublasH, opConfig.targetRows * batchSize, seed, vec2, 1) );
-                cublasErrCk( cublasSetPointerMode( *cublasH, CUBLAS_POINTER_MODE_HOST ) );
+              InnerProduct_computeGrad(this, seed, op);
 
                 
-                computeGrad(opConfig.target2, vec1);
-                computeGrad(opConfig.target1, vec2);
             } break;
             case OperationType::InputColumn: {
                 float alpha = 1;
@@ -1007,32 +979,7 @@ void noOpBatchCompute(Function* f, int idx, int length) {}
                     cublasErrCk( cublasSscal(*cublasH, op.rows * op.cols * batchSize, &(opConfig.scale), d_result, 1) );
                 break;}
                 case OperationType::InnerProduct:{
-                    BinaryOpConfig opConfig = get<BinaryOpConfig>(op.config);
-                    float* d_v1 = getResult(opConfig.target1);//memLocs[opConfig.target1+"_result"];
-                    float* d_v2 = getResult(opConfig.target2);//memLocs[opConfig.target2+"_result"];
-                    float* d_result = getResult(op.name);//memLocs[op.name+"_result"];
-
-                    float alpha = 1;
-                    float beta = 0;
-
-                    cublasErrCk( cublasSgemvStridedBatched( *cublasH
-                                       , CUBLAS_OP_N
-                                       , 1
-                                       , opConfig.targetRows
-                                       , &alpha
-                                       , d_v1
-                                       , 1
-                                       , opConfig.targetRows
-                                       , d_v2
-                                       , 1
-                                       , opConfig.targetRows
-                                       , &beta
-                                       , d_result
-                                       , 1
-                                       , 1
-                                       , batchSize) );
-
-
+                  InnerProduct_compute(this, op);
                 break;}
                 case OperationType::Convolution:{
                     // pad the input, which means a copy to wocrking, which is slow
