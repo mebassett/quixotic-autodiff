@@ -1,5 +1,6 @@
 #include "daft_autodiff.h"
 #include "daft_innerproduct.h"
+#include "daft_inputs.h"
 #include "daft_kernels.cuh"
 #include "daft_error.h"
 #include <cublas_v2.h>
@@ -92,36 +93,6 @@ void noOpBatchCompute(Function* f, int idx, int length) {}
      cudaDeviceSynchronize(); //do you actually need this? 
  }
 
-    Operation Operation::column(string name, uint rows) {
-        return { .opType=OperationType::InputColumn
-               , .workingSize = 0
-               , .resultSize = rows
-               , .gradSize = rows
-               , .rows = rows
-               , .cols = 1
-               , .name{name} };
-    }
-
-    Operation Operation::inputMatrix(string name, uint rows, uint cols) {
-        return { .opType=OperationType::InputMatrix
-               , .workingSize = 0
-               , .resultSize = rows*cols
-               , .gradSize = rows*cols
-               , .rows = rows
-               , .cols = cols
-               , .name{name} };
-              
-    }
-    Operation Operation::weightsMatrix(string name, uint rows, uint cols) {
-        return { .opType=OperationType::WeightsMatrix
-               , .workingSize = 0
-               , .resultSize = rows*cols
-               , .gradSize = rows*cols
-               , .rows = rows
-               , .cols = cols
-               , .name{name} };
-              
-    }
 
     Operation Operation::matrixProduct(string name, string target1, string target2, uint target1Rows, uint target1Cols, uint target2Cols) {
         return { .opType=OperationType::MatrixProduct
@@ -547,23 +518,15 @@ void noOpBatchCompute(Function* f, int idx, int length) {}
 
                 
             } break;
-            case OperationType::InputColumn: {
-                float alpha = 1;
-                float *grad = getGrad(name);//memLocs[name+"_grad"];
-                cublasErrCk( cublasSaxpy(*cublasH, op.gradSize*batchSize, &alpha, seed, 1, grad, 1) );
 
+            case OperationType::InputColumn: {
+              Input_computeGrad(this, seed, op);
             } break;
             case OperationType::InputMatrix: {
-                float alpha = 1;
-                float *grad = getGrad(name);//memLocs[name+"_grad"];
-                cublasErrCk( cublasSaxpy(*cublasH, op.gradSize*batchSize, &alpha, seed, 1, grad, 1) );
+              Input_computeGrad(this, seed, op);
             } break;
             case OperationType::WeightsMatrix: {
-                float alpha = 1;
-                float *grad = getGrad(name);//memLocs[name+"_grad"];
-                // we don't batch weights, because that's silly.  so we are summing all these up
-                for(int i = 0; i <batchSize; i++)
-                  cublasErrCk( cublasSaxpy(*cublasH, op.gradSize, &alpha, seed+i*op.gradSize, 1, grad, 1) );
+              Weights_computeGrad(this, seed, op);
             } break;
             case OperationType::MatrixProduct: {
                 BinaryMatrixConfig opConfig = get<BinaryMatrixConfig>(op.config);
