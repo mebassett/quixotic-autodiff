@@ -1,6 +1,5 @@
 #include "daft_autodiff.h"
 #include "daft_error.h"
-#include "daft_innerproduct.h"
 
 using namespace DA;
 

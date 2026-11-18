@@ -1,7 +1,13 @@
 #include "daft_autodiff.h"
 #include "daft_innerproduct.h"
+#include "daft_convolution.h"
 #include "daft_inputs.h"
 #include "daft_matrix_product.h"
+#include "daft_leaky_relu.h"
+#include "daft_add.h"
+#include "daft_scalar.h"
+#include "daft_maxpool.h"
+#include "daft_concat.h"
 #include "daft_kernels.cuh"
 #include "daft_error.h"
 #include <cublas_v2.h>
@@ -56,179 +62,7 @@ void noOpBatchCompute(Function* f, int idx, int length) {}
     }
 
 
- void convolutionPadInput( uint inputRows, uint inputCols
-                         , uint rowPadding, uint colPadding
-                         , float* input, float* output, int batchSize) {
-     uint outputRows = inputRows + rowPadding*2;
-     uint outputCols = inputCols + colPadding*2;
-     dim3 gd(ceil(outputCols / 16.0), ceil(outputRows / 16.0),  ceil(batchSize / 4.0));
-     dim3 bd(16, 16, 4);
 
-     doPadInput<<<gd, bd>>>(input, output, inputRows
-                 , inputCols, rowPadding, colPadding, batchSize);
-     cudaErrCk( cudaPeekAtLastError() );
-     cudaDeviceSynchronize(); //do you actually need this? 
- }
-
- void convolutionUnrollKernel( uint unrKrnlRows, uint unrKrnlCols
-                             , uint kernelRows, uint kernelCols
-                             , uint paddedInputCols
-                             , uint outputCols
-                             , uint rowSkip
-                             , uint colSkip
-                             , float* kernel
-                             , float* output ) {
-     dim3 gd(ceil(unrKrnlCols / 32.0), ceil(unrKrnlRows / 32.0), 1);
-     dim3 bd(32, 32, 1);
-     doUnroll<<<gd, bd>>>( kernel
-                         , output
-                         , kernelRows
-                         , kernelCols
-                         , unrKrnlRows
-                         , unrKrnlCols
-                         , paddedInputCols
-                         , outputCols
-                         , rowSkip
-                         , colSkip );
-     cudaErrCk( cudaPeekAtLastError() );
-     cudaDeviceSynchronize(); //do you actually need this? 
- }
-
-
-    Operation Operation::applyLeakyReLU(string name, string target, uint rows, uint cols) {
-        BasicConfig config = { .target{target}};
-        return { .opType=OperationType::LeakyReLU
-                , .workingSize = rows*cols
-                , .resultSize = rows*cols
-                , .gradSize = rows*cols
-                , .rows=rows
-                , .cols=cols
-                , .name{name}
-                , .config{ (BasicConfig){ .target{target} } }
-                };
-    }
-
-
-    Operation Operation::add(string name, string target1, string target2, uint rows, uint cols) {
-        return { .opType=OperationType::Add
-               , .workingSize = 0
-               , .resultSize = rows*cols
-               , .gradSize = rows*cols
-               , .rows = rows
-               , .cols = cols
-               , .name{name}
-               , .config{ (BinaryOpConfig) {.target1{target1}, .target2{target2}, 
-                                            .targetRows = rows, .targetCols = 1}}
-        };
-    }
-
-    Operation Operation::scalarMultiply(string name, string target, uint rows, uint cols, float scale) {
-        return { .opType=OperationType::Scalar
-               , .workingSize = 0
-               , .resultSize = rows*cols
-               , .gradSize = rows*cols
-               , .rows = rows
-               , .cols = cols
-               , .name{name}
-               , .config{ (ScalarConfig) { .target{target}, .scale=scale }}
-        };
-    }
-    
-    Operation Operation::convolution(string name, string multiplicand, string kernel, uint rowPadding,
-            uint rowSkip, uint colPadding, uint colSkip, 
-            uint multiplicandRows, uint multiplicandCols,
-            uint kernelRows, uint kernelCols) {
-        int rows = (multiplicandRows + 2 * rowPadding - kernelRows) / rowSkip + 1;
-        int cols = (multiplicandCols + 2 * colPadding - kernelCols) / colSkip + 1;
-
-        int unrKrnlCols = (multiplicandRows + rowPadding*2) * (multiplicandCols + colPadding*2);
-        int unrKrnlRows = rows * cols; 
-
-        // working size ihe padding input plus the unrolled kernel.
-        int paddedInputSize = 
-          (multiplicandRows + 2 * rowPadding) * (multiplicandCols + 2 * colPadding);
-
-        // grad size will be 
-        //    size of the original kernel matrix
-        //  + size of the original input matrix (multiplicand)
-        //  BUT we also need some working memory for the unrolling and unpadding
-        //  so we also have
-        //  + size of unrolled kernel matrix
-        //  + size of a column of the unrolled kernel matrix
-        // of the multiplicand plus
-        int gradSize =    (kernelRows * kernelCols) 
-                        + (multiplicandRows * multiplicandCols)
-                        + (unrKrnlRows * unrKrnlCols)
-                        + unrKrnlCols;
-        
-        return { .opType=OperationType::Convolution
-               , .workingSize = paddedInputSize + (unrKrnlRows * unrKrnlCols)
-               , .resultSize = rows * cols
-               , .gradSize = gradSize
-               , .rows = rows
-               , .cols = cols
-               , .name{name}
-               , .config{ (ConvolutionConfig) {
-                   .multiplicand{multiplicand}
-                 , .kernel{kernel}
-                 , .rowPadding = rowPadding
-                 , .rowSkip = rowSkip
-                 , .colPadding = colPadding
-                 , .colSkip = colSkip
-                 , .multiplicandRows = multiplicandRows
-                 , .multiplicandCols = multiplicandCols
-                 , .kernelRows = kernelRows
-                 , .kernelCols = kernelCols
-                 , .unrKrnlRows = unrKrnlRows
-                 , .unrKrnlCols = unrKrnlCols
-                 , .paddedInputSize = paddedInputSize
-                 }}
-               };
-    }
-
-     Operation Operation::maxPool(string name, string target, uint width, uint height, 
-             uint rowSkip, uint colSkip, uint targetRows, uint targetCols) {
-         uint rows = (targetRows - height) / rowSkip + 1;
-         uint cols = (targetCols - width) / colSkip + 1;
-         
-         return { .opType=OperationType::MaxPool
-                , .workingSize = 0
-                , .resultSize = rows * cols
-                , .gradSize = targetRows * targetCols
-                , .rows = rows
-                , .cols = cols
-                , .name{name}
-                , .config{ (MaxPoolConfig) {
-                    .target{target}
-                  , .width = width
-                  , .height = height
-                  , .rowSkip = rowSkip
-                  , .colSkip = colSkip
-                  , .targetRows = targetRows
-                  , .targetCols = targetCols
-                  }}
-                };
-     }
-
-    // // so we are assuming the results of each of the targets are just a big 
-    // // continuous block in memory.  otherwise this won't work.  so be careful
-    // // using it.  it's mostly used to push the gradients down.
-    // UPDATE: no longer to a big continuous block of memory.  now we do copying
-    // and interleaving, which is slower.  concat adds a step.
-    Operation Operation::concat(string name, const vector<string>& targets, uint size) {
-        return { .opType=OperationType::Concat
-               , .workingSize = 0
-               , .resultSize = size // we assume the user set this correctly.
-               , .gradSize = 0
-               , .rows = size 
-               , .cols = 1
-               , .name{name}
-               , .config { (ConcatConfig) {
-                     .targets{targets}
-                   , .size=size
-               }}
-        };
-    }
 
     Function::Function(cublasHandle_t* cublasH) : ops(), memLocs(), pointerLocs(), cublasH(cublasH) {
         batchSize = 1; 
@@ -516,194 +350,22 @@ void noOpBatchCompute(Function* f, int idx, int length) {}
               MatrixProduct_computeGrad(this, seed, op);
             } break;
             case OperationType::Scalar: {
-                ScalarConfig opConfig = get<ScalarConfig>(op.config);
-                float *result = getResult(name);//memLocs[op.name+"_result"];
-                float *grad = getGrad(name);//memLocs[name+"_grad"];
-
-                cublasErrCk( cublasScopy(*cublasH, op.cols * op.rows * batchSize, seed, 1, grad, 1) );
-                cublasErrCk( cublasSscal(*cublasH, op.cols * op.rows * batchSize, &(opConfig.scale), grad, 1) );
-                computeGrad(opConfig.target, grad);
-
+              Scalar_computeGrad(this, seed, op);
             } break;
             case OperationType::Add: {
-                BinaryOpConfig opConfig = get<BinaryOpConfig>(op.config);
-                float* copySeed = getGrad(name);//memLocs[op.name+"_grad"];
-
-                cudaMemcpy(copySeed, seed, batchSize * op.rows * op.cols * sizeof(float), cudaMemcpyDeviceToDevice);
-                computeGrad(opConfig.target1, seed);
-                computeGrad(opConfig.target2, copySeed);
+              Add_computeGrad(this, seed, op);
             } break;
             case OperationType::LeakyReLU: {
-                BasicConfig opConfig = get<BasicConfig>(op.config);
-                float* newSeed = getWorkingMemory(name);//memLocs[op.name+"_working"];
-                float *grad = getGrad(name);//memLocs[name+"_grad"];
-                dim3 bd(16, 16, 4);
-                dim3 gd(ceil(op.cols / 16.0), ceil(op.rows / 16.0), ceil(batchSize / 4.0));
-
-                doComponentProduct<<<gd, bd>>>(op.rows, op.cols, grad, seed, newSeed, batchSize);
-
-                computeGrad(opConfig.target, newSeed);
-
+              LeakyReLU_computeGrad(this, seed, op);
             } break;
             case OperationType::Convolution: {
-                ConvolutionConfig opCnfg = get<ConvolutionConfig>(op.config);
-
-                float alpha = 1;
-                float beta = 0;
-
-                int startInput = opCnfg.kernelRows * opCnfg.kernelCols * batchSize;
-                int startMatrix = startInput 
-                    + (opCnfg.multiplicandRows * opCnfg.multiplicandCols * batchSize );
-                int startCol = startMatrix
-                    + (opCnfg.unrKrnlRows * opCnfg.unrKrnlCols )*batchSize;
-
-                float* rolledKernelMatrixGrad = getGrad(name);//memLocs[op.name+"_grad"];
-                float* inputGrad = getGrad(name) + startInput;
-                float* matrixGrad = getGrad(name) + startMatrix; 
-                float* colGrad = getGrad(name) + startCol; 
-
-                float* paddedInput = getWorkingMemory(name);//memLocs[op.name+"_working"];
-                float* unrolledKernel = getWorkingMemory(name)//memLocs[op.name+"_working"]
-                                    + opCnfg.paddedInputSize * batchSize;
-
-                int matrixGradSize = opCnfg.unrKrnlCols * opCnfg.unrKrnlRows;
-                int paddedInputSize = opCnfg.unrKrnlCols;
-                int seedSize = opCnfg.unrKrnlRows;
-
-
-                cublasErrCk( cublasSgemmStridedBatched( *cublasH
-                            , CUBLAS_OP_T
-                            , CUBLAS_OP_N
-                            , opCnfg.unrKrnlCols
-                            , opCnfg.unrKrnlRows
-                            , 1
-                            , &alpha
-                            , paddedInput
-                            , 1
-                            , paddedInputSize
-                            , seed
-                            , 1
-                            , seedSize
-                            , &beta
-                            , matrixGrad
-                            , opCnfg.unrKrnlCols
-                            , matrixGradSize //stride matrixGrad
-                            , batchSize));
- 
-                dim3 bd(32, 1, 32);
-                dim3 gd(ceil(opCnfg.unrKrnlCols / 32.0), 1, ceil(batchSize / 32.0));
-
-                    
-                doKernelRoll<<<gd, bd>>>( matrixGrad
-                    , rolledKernelMatrixGrad
-                    , opCnfg.kernelRows
-                    , opCnfg.kernelCols
-                    , opCnfg.unrKrnlCols
-                    , opCnfg.unrKrnlRows
-                    , opCnfg.colSkip
-                    , opCnfg.rowSkip
-                    , opCnfg.multiplicandCols + 2 * opCnfg.colPadding
-                    , op.cols
-                    , batchSize);
-                cudaErrCk( cudaPeekAtLastError() );
-
-
-
-                computeGrad(opCnfg.kernel, rolledKernelMatrixGrad);
-
-
-                cublasErrCk(
-                  cublasSgemmStridedBatched( *cublasH
-                      , CUBLAS_OP_N
-                      , CUBLAS_OP_T
-                      , 1
-                      , opCnfg.unrKrnlCols
-                      , opCnfg.unrKrnlRows
-                      , &alpha
-                      , seed
-                      , 1
-                      , seedSize
-                      , unrolledKernel
-                      , opCnfg.unrKrnlCols
-                      , 0 //. stride unrolledKernel
-                      , &beta
-                      , colGrad
-                      , 1
-                      , opCnfg.unrKrnlCols // stride colGrad
-                      , batchSize)
-                );
-
-
-                dim3 gd2( ceil(opCnfg.multiplicandCols / 16.0)
-                        , ceil(opCnfg.multiplicandRows / 16.0)
-                        , ceil(batchSize / 4.0));
-                dim3 bd2(16, 16, 4);
-                doCopyWithoutPadding<<<gd2, bd2>>>( colGrad
-                        , inputGrad
-                        , opCnfg.multiplicandRows
-                        , opCnfg.multiplicandCols
-                        , opCnfg.rowPadding
-                        , opCnfg.colPadding
-                        , batchSize);
-                cudaErrCk( cudaPeekAtLastError() );
-                computeGrad(opCnfg.multiplicand, inputGrad);
+              Convolution_computeGrad(this, seed, op);
             }break;
             case OperationType::MaxPool: {
-                MaxPoolConfig opConfig = get<MaxPoolConfig>(op.config);
-                float* targetValue = getResult(opConfig.target);//memLocs[opConfig.target+"_result"];
-                float* result = getResult(name);//memLocs[op.name+"_result"];
-                float* grad = getGrad(name);//memLocs[op.name+"_grad"];
-
-                dim3 bd(16, 16, 4);
-                dim3 gd(ceil(op.cols / 16.0), ceil(op.rows / 16.0), ceil(batchSize / 4.0));
-                doMaxPoolGrad<<<gd, bd>>>(op.rows, op.cols, opConfig.targetRows, opConfig.targetCols, 
-                    opConfig.rowSkip, opConfig.height, opConfig.colSkip, opConfig.width, 
-                    targetValue, result, seed, grad, batchSize);
-                cudaErrCk( cudaPeekAtLastError() );
-
-                computeGrad(opConfig.target, grad);
+              MaxPool_computeGrad(this, seed, op);
             }break;
             case OperationType::Concat: {
-                ConcatConfig opCnfg = get<ConcatConfig>(op.config);
-                int targetSizes[32];
-                int d_size = opCnfg.targets.size();
-                int memIndex = 0;
-                float* d_newSeed = getGrad(name);//memLocs[op.name+"_grad"];
-
-                for (int i=0; i < d_size; i++) {
-                    Operation* targetOp;
-                    try {
-                        targetOp = opsMap.at(opCnfg.targets[i]);
-                    } catch (const out_of_range&) {
-                        break;
-                    }
-                    targetSizes[i] = targetOp->resultSize;
-                }
-
-                 
-                setConcatSizes(targetSizes, d_size);
-
-                dim3 bd(16,16,4);
-                dim3 gd(ceil((float)targetSizes[0] / 16.0), ceil((float)d_size / 16.0), ceil(batchSize / 4.0));
-
-
-                doConcatDeinterleave<<<gd, bd>>>(seed, d_size, d_newSeed, opCnfg.size, batchSize);
-                cudaErrCk( cudaPeekAtLastError() );
-
-
-                for (auto target : opCnfg.targets) {
-                  Operation* targetOp;
-                  try {
-                    targetOp = opsMap.at(target);
-                  } catch (const out_of_range&) {
-                    break;
-                  }
-                  computeGrad(target, d_newSeed + memIndex);
-                  memIndex += targetOp->rows * targetOp->cols * batchSize;
-                }
-
-
-
+              Concat_computeGrad(this, seed, op);
             }break;
 
         }
@@ -722,158 +384,29 @@ void noOpBatchCompute(Function* f, int idx, int length) {}
                     // this is the same as InputColumn.  InputColumn is redundant
                 break;
                 case OperationType::Concat: {
-                    // ~no operation here, we could do a copy to get all the targets~
-                    // ~into one continuous block in memory, but we're just going~
-                    // ~to assume that's the case. ~
-                    // ~a smart compiler might enforce that, actually!~
-                    // with batch processing this gets tricky. if we compute A and B
-                    // then we store them as
-                    // A_1 ... A_n B_1 ... B_n
-                    // A smart compile could ensure that, but with batch processing
-                    // we actually expect this tob e
-                    // A_1 B_1 A_2 B_2 ... A_n B_n.
-                    // so our operation here is actually just to do the interleaving.
-                    // this is trivial is batchSize = 1.
-                    ConcatConfig opConfig = get<ConcatConfig>(op.config);
-
-                    vector<float*> hostTargets;
-                    float** d_targets = pointerLocs[op.name];
-                    int targetSizes[32];
-                    int d_size = opConfig.targets.size();
-                    for(int i=0;i<opConfig.targets.size();i++) {
-                        Operation* targetOp;
-                        try {
-                            targetOp = opsMap.at(opConfig.targets[i]);
-                        } catch (const out_of_range&) {
-                            cout << "compute(Concat) cannot find op " <<
-                              opConfig.targets[i];
-
-                            exit(1);
-                            return;
-                        }
-                        hostTargets.push_back(getResult(opConfig.targets[i]));//memLocs[opConfig.targets[i]+"_result"]);
-                        targetSizes[i] = targetOp->resultSize;
-                    }
-
-                    setConcatSizes(targetSizes, d_size);
-                    cudaMemcpy(d_targets, &(hostTargets[0]), d_size*sizeof(float*), cudaMemcpyHostToDevice); 
-
-                    dim3 bd(16,16,4);
-                    dim3 gd(ceil((float)targetSizes[0] / 16.0), ceil((float)d_size / 16.0), ceil(batchSize / 4.0));
-
-
-                    doConcatInterleave<<<gd, bd>>>(d_targets, d_size, getResult(op.name), opConfig.size, batchSize);
-                    cudaErrCk( cudaPeekAtLastError() );
-
-
+                  Concat_compute(this, op);
                 break;}
                 case OperationType::MatrixProduct: {
                   MatrixProduct_compute(this, op);
                 break;}
 
                 case OperationType::LeakyReLU:{ 
-                    // TODO accessing memLocs like this is quite error prone.
-                    // should probably get some accessor functions so I don't make mistakes
-                    // the compile can't catch...
-                            
-                    BasicConfig opConfig = get<BasicConfig>(op.config);
-                    float* d_col = getResult(opConfig.target);//memLocs[opConfig.target+"_result"];
-                    float* d_grad = getGrad(op.name);//memLocs[op.name+"_grad"];
-                    float* d_result = getResult(op.name);//memLocs[op.name+"_result"];
-
-                    dim3 bd(16, 16, 4);
-                    dim3 gd(ceil(op.cols / 16.0), ceil(op.rows / 16.0), ceil(batchSize / 4.0));
-
-
-                    doLeakyReLU<<<gd, bd>>>(op.rows, op.cols, d_grad, d_col, d_result, batchSize);
-                    cudaErrCk( cudaPeekAtLastError() );
-
-
+                  LeakyReLU_compute(this, op);
                 break;}
                 case OperationType::Add:{
-                    BinaryOpConfig opConfig = get<BinaryOpConfig>(op.config);
-                    float* d_v1 = getResult(opConfig.target1);//memLocs[opConfig.target1+"_result"];
-                    float* d_v2 = getResult(opConfig.target2);//memLocs[opConfig.target2+"_result"];
-                    float* d_result = getResult(op.name);//memLocs[op.name+"_result"];
-                    float alpha = 1.0;
-                    
-                    cublasErrCk( cublasScopy(*cublasH, op.rows * op.cols * batchSize, d_v1, 1, d_result, 1) );
-                    cublasErrCk( cublasSaxpy(*cublasH, op.rows * op.cols * batchSize, &alpha, d_v2, 1, d_result, 1) );
+                  Add_compute(this, op);
                 break;}
                 case OperationType::Scalar:{
-                    ScalarConfig opConfig = get<ScalarConfig>(op.config);
-                    float* d_target = getResult(opConfig.target);//memLocs[opConfig.target+"_result"];
-                    float* d_result = getResult(op.name);//memLocs[op.name+"_result"];
-                    cublasErrCk( cublasScopy(*cublasH, op.rows * op.cols * batchSize, d_target, 1, d_result, 1) );
-                    cublasErrCk( cublasSscal(*cublasH, op.rows * op.cols * batchSize, &(opConfig.scale), d_result, 1) );
+                  Scalar_compute(this, op);
                 break;}
                 case OperationType::InnerProduct:{
                   InnerProduct_compute(this, op);
                 break;}
                 case OperationType::Convolution:{
-                    // pad the input, which means a copy to wocrking, which is slow
-                    ConvolutionConfig opCnfg = get<ConvolutionConfig>(op.config);
-                    float* input = getResult(opCnfg.multiplicand);//memLocs[opCnfg.multiplicand+"_result"];
-                    float* paddedInput = getWorkingMemory(op.name);//memLocs[op.name+"_working"];
-                    convolutionPadInput( opCnfg.multiplicandRows
-                                       , opCnfg.multiplicandCols
-                                       , opCnfg.rowPadding
-                                       , opCnfg.colPadding
-                                       , input
-                                       , paddedInput
-                                       , batchSize);
-
-                    // unroll the kernel..another slow copy to working.
-                    float* kernel = getResult(opCnfg.kernel);//memLocs[opCnfg.kernel+"_result"];
-                    float* unrolledKernel = getWorkingMemory(op.name) //memLocs[op.name+"_working"] 
-                                            + opCnfg.paddedInputSize * batchSize;
-                    convolutionUnrollKernel( opCnfg.unrKrnlRows
-                            , opCnfg.unrKrnlCols
-                            , opCnfg.kernelRows
-                            , opCnfg.kernelCols
-                            , opCnfg.multiplicandCols + 2 * opCnfg.colPadding
-                            , op.cols
-                            , opCnfg.rowSkip
-                            , opCnfg.colSkip
-                            , kernel
-                            , unrolledKernel);
-
-                    // do a matrix multiplication, storing it in the result
-                    float alpha = 1;
-                    float beta = 0;
-                    float* output = getResult(op.name);//memLocs[op.name+"_result"];
-
-                    cublasErrCk( cublasSgemvStridedBatched( *cublasH
-                                , CUBLAS_OP_T
-                                , opCnfg.unrKrnlCols
-                                , opCnfg.unrKrnlRows
-                                , &alpha
-                                , unrolledKernel // As
-                                , opCnfg.unrKrnlCols
-                                , 0 // stride A
-                                , paddedInput // x
-                                , 1
-                                , opCnfg.paddedInputSize // stride x
-                                , &beta
-                                , output
-                                , 1
-                                , op.resultSize
-                                , batchSize ) );
-
+                  Convolution_compute(this, op);
                 break;}
                 case OperationType::MaxPool: {
-                    MaxPoolConfig opConfig = get<MaxPoolConfig>(op.config);
-                    float* d_target = getResult(opConfig.target);//memLocs[opConfig.target+"_result"];
-                    float* d_result = getResult(op.name);//memLocs[op.name+"_result"];
-
-                    dim3 bd(16, 16, 4);
-                    dim3 gd(ceil(op.cols / 16.0), ceil(op.rows / 16.0), ceil(batchSize / 4.0));
-
-                    doMaxPool<<<gd, bd>>>(op.rows, op.cols, opConfig.targetRows, opConfig.targetCols,
-                        opConfig.rowSkip, opConfig.height, opConfig.colSkip, opConfig.width,
-                        d_target, d_result, batchSize);
-                    cudaErrCk( cudaPeekAtLastError() );
-
+                  MaxPool_compute(this, op);
                 break;}
             }
         }
@@ -989,12 +522,4 @@ void noOpBatchCompute(Function* f, int idx, int length) {}
                                , const map<string, vector<vector<float>>>& inputs) {
         batchCompute( results, targets, inputs, noOpBatchCompute);
     }
-
-
-
-
-
-
-
-
 } // namespace DA
