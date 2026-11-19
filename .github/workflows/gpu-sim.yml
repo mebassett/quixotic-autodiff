@@ -1,0 +1,72 @@
+name: GPU Simulator
+
+# Optional, non-required check. The hosted runners have no GPU, so this runs
+# the gtest suite on a simulated NVIDIA H100
+# (https://github.com/pantheongpu/pantheonsim). A simulator has no timing
+# model and cannot reproduce hardware-specific behavior, so it complements
+# real-GPU testing and does not replace it.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "daft_autodiff/**"
+      - "silly_autodiff/**"
+      - "tests/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/gpu-sim.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests (CUDA 13.0 and simulated H100)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up the simulated GPU and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@a1b9d4237411f9b2b0e0bb895b4d83377f336a7b # v0.1.9
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+
+      - name: Install GoogleTest
+        run: sudo apt-get update && sudo apt-get install -y libgtest-dev
+
+      # CMakeLists.txt builds the tests for the "native" GPU, which does not
+      # exist on a hosted runner. 90-virtual embeds PTX only, which the
+      # simulator runs. The simulator needs a shared CUDA runtime.
+      - name: Configure
+        run: |
+          sed -i 's/CUDA_ARCHITECTURES "native"/CUDA_ARCHITECTURES "90-virtual"/' CMakeLists.txt
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES=90-virtual \
+            -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared
+
+      - name: Build
+        run: vgpu run --preload cmake --build build -j3 --target tests
+
+      # The compute-sanitizer MemCheckTest is not run, since the sanitizer
+      # needs real hardware. The gtest binary must report a pass and no
+      # failed or skipped tests.
+      - name: Test
+        shell: bash
+        run: |
+          set -o pipefail
+          vgpu run build/tests | tee tests.log
+          grep -q "^\[  PASSED  \] [1-9][0-9]* tests\?\." tests.log
+          if grep -qE "^\[  (FAILED|SKIPPED)  \]|CUDA error" tests.log; then
+            echo "::error::a test failed or was skipped"
+            exit 1
+          fi
