@@ -1,0 +1,27 @@
+#!/bin/bash
+# Pre-commit hook: clang-format any staged C/C++/CUDA files, then re-stage them.
+# Only files that are actually staged are touched.
+
+set -euo pipefail
+
+# Files staged for commit (added/copied/renamed/modified only, not deletions)
+staged=$(git diff --cached --name-only --diff-filter=ACMR -- '*.cu' '*.cuh' '*.h' '*.hpp' '*.cpp' '*.cc' '*.cxx' '*.hpp')
+
+if [ -z "$staged" ]; then
+  exit 0
+fi
+
+changed=0
+for file in $staged; do
+  clang-format -i "$file"
+  if ! git diff --quiet -- "$file"; then
+    changed=1
+  fi
+  git add -- "$file"
+done
+
+if [ "$changed" -eq 1 ]; then
+  echo "pre-commit: clang-format reformatted staged files (they have been re-staged)."
+fi
+
+exit 0
