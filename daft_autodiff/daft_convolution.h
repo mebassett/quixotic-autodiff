@@ -6,9 +6,9 @@
 
 namespace DA {
 
-  void Convolution_computeGrad(Function* f, float* seed, Operation& op);
-  void Convolution_compute(Function* f, Operation& op);
+void Convolution_computeGrad(Function* f, float* seed, Operation& op);
+void Convolution_compute(Function* f, Operation& op);
 
-}
+} // namespace DA
 
 #endif /* DAFT_CONVOLUTION_H */

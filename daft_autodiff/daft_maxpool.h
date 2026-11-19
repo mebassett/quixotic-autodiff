@@ -6,9 +6,9 @@
 
 namespace DA {
 
-  void MaxPool_computeGrad(Function* f, float* seed, Operation& op);
-  void MaxPool_compute(Function* f, Operation& op);
+void MaxPool_computeGrad(Function* f, float* seed, Operation& op);
+void MaxPool_compute(Function* f, Operation& op);
 
-}
+} // namespace DA
 
 #endif /* DAFT_MAXPOOL_H */

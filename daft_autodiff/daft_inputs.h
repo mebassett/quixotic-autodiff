@@ -6,9 +6,9 @@
 
 namespace DA {
 
-  void Input_computeGrad(Function* f, float* seed, Operation& op);
-  void Weights_computeGrad(Function* f, float* seed, Operation& op);
+void Input_computeGrad(Function* f, float* seed, Operation& op);
+void Weights_computeGrad(Function* f, float* seed, Operation& op);
 
-}
+} // namespace DA
 
 #endif /* DAFT_INPUTS_H */

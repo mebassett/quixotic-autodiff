@@ -6,9 +6,9 @@
 
 namespace DA {
 
-  void Concat_computeGrad(Function* f, float* seed, Operation& op);
-  void Concat_compute(Function* f, Operation& op);
+void Concat_computeGrad(Function* f, float* seed, Operation& op);
+void Concat_compute(Function* f, Operation& op);
 
-}
+} // namespace DA
 
 #endif /* DAFT_CONCAT_H */

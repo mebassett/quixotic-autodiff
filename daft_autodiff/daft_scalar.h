@@ -6,9 +6,9 @@
 
 namespace DA {
 
-  void Scalar_computeGrad(Function* f, float* seed, Operation& op);
-  void Scalar_compute(Function* f, Operation& op);
+void Scalar_computeGrad(Function* f, float* seed, Operation& op);
+void Scalar_compute(Function* f, Operation& op);
 
-}
+} // namespace DA
 
 #endif /* DAFT_SCALAR_H */

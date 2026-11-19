@@ -6,9 +6,9 @@
 
 namespace DA {
 
-  void MatrixProduct_computeGrad(Function* f, float* seed, Operation& op);
-  void MatrixProduct_compute(Function* f, Operation& op);
+void MatrixProduct_computeGrad(Function* f, float* seed, Operation& op);
+void MatrixProduct_compute(Function* f, Operation& op);
 
-}
+} // namespace DA
 
 #endif /* DAFT_MATRIX_PRODUCT_H */

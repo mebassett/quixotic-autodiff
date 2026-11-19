@@ -6,9 +6,9 @@
 
 namespace DA {
 
-  void InnerProduct_computeGrad(Function* f, float* seed, Operation& op);
-  void InnerProduct_compute(Function* f, Operation& op);
+void InnerProduct_computeGrad(Function* f, float* seed, Operation& op);
+void InnerProduct_compute(Function* f, Operation& op);
 
-}
+} // namespace DA
 
 #endif /* DAFT_INNERPRODUCT_H */
